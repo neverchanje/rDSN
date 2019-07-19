@@ -24,21 +24,7 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     interface for apps to be replicated using rDSN
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
-
-//
-// replication_app_base is the base class for all app to be replicated using
-// this library
-//
 
 #include <dsn/cpp/serverlet.h>
 #include <dsn/cpp/json_helper.h>
@@ -63,10 +49,13 @@ public:
     decree init_durable_decree;
     int64_t init_offset_in_shared_log;
     int64_t init_offset_in_private_log;
+    bool init_duplicating;
+
     DEFINE_JSON_SERIALIZATION(init_ballot,
                               init_durable_decree,
                               init_offset_in_shared_log,
-                              init_offset_in_private_log)
+                              init_offset_in_private_log,
+                              init_duplicating)
 
 public:
     replica_init_info() { memset((void *)this, 0, sizeof(*this)); }
@@ -92,6 +81,9 @@ public:
     error_code store(const char *file);
 };
 
+/// The store engine interface of Pegasus.
+/// Inherited by pegasus::pegasus_server_impl
+/// Inherited by dsn::apps::rrdb_service
 class replication_app_base : public replica_base
 {
 public:
@@ -236,6 +228,15 @@ public:
     // query app envs.
     virtual void query_app_envs(/*out*/ std::map<std::string, std::string> &envs) = 0;
 
+    // Checks if the given write is stale.
+    // Storage engine with this feature may retrieve the record (the key is serialized
+    // in `data`) and compare its timestamp with `timestamp`, if the former is larger,
+    // this write is stale then.
+    virtual bool is_write_stale(uint64_t timestamp, task_code rpc_code, const blob &data)
+    {
+        return false;
+    }
+
 public:
     //
     // utility functions to be used by app
@@ -247,24 +248,33 @@ public:
     {
         return _last_committed_decree.load();
     }
-    void reset_counters_after_learning();
+
+    bool is_duplicating() const { return _info.init_duplicating; }
+
+    void update_stub_counter_dup_time_lag(uint64_t time_lag_in_us);
 
 private:
     // routines for replica internal usage
     friend class replica;
     friend class replica_stub;
+    friend class replica_duplicator;
+    friend class mock_replica;
 
     ::dsn::error_code open_internal(replica *r);
     ::dsn::error_code
     open_new_internal(replica *r, int64_t shared_log_start, int64_t private_log_start);
 
     const replica_init_info &init_info() const { return _info; }
+
     ::dsn::error_code update_init_info(replica *r,
                                        int64_t shared_log_offset,
                                        int64_t private_log_offset,
-                                       int64_t durable_decree);
+                                       int64_t durable_decree,
+                                       bool duplicating);
+
     ::dsn::error_code update_init_info_ballot_and_decree(replica *r);
-    void install_perf_counters();
+
+    ::dsn::error_code update_init_info_duplicating(bool duplicating);
 
 protected:
     std::string _dir_data;   // ${replica_dir}/data
@@ -277,6 +287,5 @@ protected:
     explicit replication_app_base(::dsn::replication::replica *replica);
 };
 
-//------------------ inline implementation ---------------------
-}
-} // namespace
+} // namespace replication
+} // namespace dsn

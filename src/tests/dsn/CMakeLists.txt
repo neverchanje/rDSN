@@ -35,7 +35,7 @@ set(MY_PROJ_LIBS
     ${MY_PROJ_LIBS}
     )
 
-set(MY_BOOST_PACKAGES system filesystem)
+set(MY_BOOST_PACKAGES system filesystem regex)
 
 set(MY_PROJ_LIB_PATH "")
 
@@ -44,7 +44,6 @@ set(MY_BINPLACES
     "${CMAKE_CURRENT_SOURCE_DIR}/run.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}/restart_zookeeper.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}/clear.sh"
-    "${CMAKE_CURRENT_SOURCE_DIR}/clear.cmd"
     "${CMAKE_CURRENT_SOURCE_DIR}/config-test.ini"
     "${CMAKE_CURRENT_SOURCE_DIR}/config-whitelist-test.ini"
     "${CMAKE_CURRENT_SOURCE_DIR}/config-whitelist-test-failed.ini"

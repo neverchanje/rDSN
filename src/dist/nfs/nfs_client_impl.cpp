@@ -24,14 +24,6 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
 #include <dsn/utility/filesystem.h>
 #include <queue>
 #include "nfs_client_impl.h"
@@ -81,14 +73,11 @@ void nfs_client_impl::begin_remote_copy(std::shared_ptr<remote_copy_request> &rc
     req->is_finished = false;
 
     get_file_size(req->file_size_req,
+                  req->file_size_req.source,
                   [=](error_code err, get_file_size_response &&resp) {
                       end_get_file_size(err, std::move(resp), req);
                   },
-                  std::chrono::milliseconds(_opts.rpc_timeout_ms),
-                  0,
-                  0,
-                  0,
-                  req->file_size_req.source);
+                  std::chrono::milliseconds(_opts.rpc_timeout_ms));
 }
 
 void nfs_client_impl::end_get_file_size(::dsn::error_code err,
@@ -112,6 +101,13 @@ void nfs_client_impl::end_get_file_size(::dsn::error_code err,
                err.to_string());
         ureq->nfs_task->enqueue(err, 0);
         return;
+    }
+
+    if (resp.__isset.nfs_port && dsn_is_port_opened(resp.nfs_port)) {
+        // If the remote node provides an exclusive tcp connection
+        // for nfs file copy, later RPCs are going to run on it.
+        rpc_address &src_addr = ureq->file_size_req.source;
+        src_addr.assign_ipv4(src_addr.ip(), resp.nfs_port);
     }
 
     std::deque<copy_request_ex_ptr> copy_requests;
@@ -227,6 +223,7 @@ void nfs_client_impl::continue_copy()
                 copy_req.overwrite = ureq->file_size_req.overwrite;
                 copy_req.is_last = req->is_last;
                 req->remote_copy_task = copy(copy_req,
+                                             req->file_ctx->user_req->file_size_req.source,
                                              [=](error_code err, copy_response &&resp) {
                                                  end_copy(err, std::move(resp), req);
                                                  // reset task to release memory quickly.
@@ -237,11 +234,7 @@ void nfs_client_impl::continue_copy()
                                                      tsk = std::move(req->remote_copy_task);
                                                  }
                                              },
-                                             std::chrono::milliseconds(_opts.rpc_timeout_ms),
-                                             0,
-                                             0,
-                                             0,
-                                             req->file_ctx->user_req->file_size_req.source);
+                                             std::chrono::milliseconds(_opts.rpc_timeout_ms));
             } else {
                 --ureq->concurrent_copy_count;
                 --_concurrent_copy_request_count;
@@ -502,5 +495,6 @@ void nfs_client_impl::handle_completion(const user_request_ptr &req, error_code 
     // notify aio_task
     req->nfs_task->enqueue(err, err == ERR_OK ? total_size : 0);
 }
-}
-}
+
+} // namespace service
+} // namespace dsn

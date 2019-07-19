@@ -37,9 +37,12 @@
 #include "mutation.h"
 #include "mutation_log.h"
 #include "replica_stub.h"
-#include <dsn/utility/factory_store.h>
+
+#include "dist/replication/lib/duplication/replica_duplicator_manager.h"
+
 #include <dsn/utility/filesystem.h>
 #include <dsn/dist/replication/replication_app_base.h>
+#include <dsn/dist/fmt_logging.h>
 
 namespace dsn {
 namespace replication {
@@ -194,6 +197,19 @@ void replica::init_learn(uint64_t signature)
 
     learn_request request;
     request.pid = get_gpid();
+
+    request.__set_max_gced_decree(_private_log->max_gced_decree(get_gpid()));
+    decree learning_start = _potential_secondary_states.min_learn_start_decree;
+    if (learning_start >= 0) {
+        // the learned logs may still reside in learn_dir, and
+        // the actual plog dir may be empty.
+        if (request.max_gced_decree < 0) {
+            request.max_gced_decree = learning_start - 1;
+        } else {
+            request.max_gced_decree = std::min(request.max_gced_decree, learning_start - 1);
+        }
+    }
+
     request.last_committed_decree_in_app = _app->last_committed_decree();
     request.last_committed_decree_in_prepare_list = _prepare_list->last_committed_decree();
     request.learner = _stub->_primary_address;
@@ -201,7 +217,7 @@ void replica::init_learn(uint64_t signature)
     _app->prepare_get_checkpoint(request.app_specific_learn_request);
 
     ddebug("%s: init_learn[%016" PRIx64 "]: learnee = %s, learn_duration = %" PRIu64
-           " ms, local_committed_decree = %" PRId64 ", "
+           " ms, max_gced_decree = %" PRId64 ", local_committed_decree = %" PRId64 ", "
            "app_committed_decree = %" PRId64 ", app_durable_decree = %" PRId64
            ", current_learning_status = %s, total_copy_file_count = %" PRIu64
            ", total_copy_file_size = %" PRIu64 ", total_copy_buffer_size = %" PRIu64,
@@ -209,6 +225,7 @@ void replica::init_learn(uint64_t signature)
            request.signature,
            _config.primary.to_string(),
            _potential_secondary_states.duration_ms(),
+           request.max_gced_decree,
            last_committed_decree(),
            _app->last_committed_decree(),
            _app->last_durable_decree(),
@@ -226,6 +243,64 @@ void replica::init_learn(uint64_t signature)
         [ this, req_cap = std::move(request) ](error_code err, learn_response && resp) mutable {
             on_learn_reply(err, std::move(req_cap), std::move(resp));
         });
+}
+
+decree replica::max_gced_decree_no_lock() const
+{
+    return _private_log->max_gced_decree_no_lock(get_gpid());
+}
+
+decree replica::get_learn_start_decree(const learn_request &request)
+{
+    decree local_committed_decree = last_committed_decree();
+    dcheck_le_replica(request.last_committed_decree_in_app, local_committed_decree);
+
+    decree learn_start_decree = request.last_committed_decree_in_app + 1;
+    if (!is_duplicating()) {
+        // fast path for no duplication case
+        dcheck_le_replica(learn_start_decree, local_committed_decree + 1);
+        return learn_start_decree;
+    }
+
+    decree min_confirmed_decree = _duplication_mgr->min_confirmed_decree();
+
+    // learner should include the mutations not confirmed by meta server
+    // so as to prevent data loss during duplication. For example, when
+    // the confirmed+1 decree has been GCed from plog, we need to learn
+    // back from it.
+    //                confirmed
+    //                    |
+    // learner's plog: ======[--------------]
+    //                       |              |
+    //                      gced           committed
+
+    decree new_learn_start_decree = learn_start_decree;
+    if (min_confirmed_decree >= 0) {
+        new_learn_start_decree = min_confirmed_decree + 1;
+    } else {
+        decree local_gced = max_gced_decree_no_lock();
+        if (local_gced == invalid_decree) {
+            // abnormal case
+            ddebug_replica("no plog to be learned for duplication, continue as normal");
+        } else {
+            new_learn_start_decree = local_gced + 1;
+        }
+    }
+
+    // max_gced_decree == invalid_decree indicates that learner's plog directory is empty.
+    if (new_learn_start_decree < learn_start_decree &&
+        (new_learn_start_decree <= request.max_gced_decree ||
+         request.max_gced_decree == invalid_decree)) {
+        learn_start_decree = new_learn_start_decree;
+        ddebug_replica("learn_start_decree steps back to {} to ensure learner having enough "
+                       "logs for duplication [confirmed_decree={}, learner_gced_decree={}]",
+                       learn_start_decree,
+                       min_confirmed_decree,
+                       request.max_gced_decree);
+    }
+    dcheck_le_replica(learn_start_decree, local_committed_decree + 1);
+    dcheck_gt_replica(learn_start_decree, 0); // learn_start_decree can never be invalid_decree
+    return learn_start_decree;
 }
 
 void replica::on_learn(dsn::message_ex *msg, const learn_request &request)
@@ -311,16 +386,8 @@ void replica::on_learn(dsn::message_ex *msg, const learn_request &request)
         }
     }
 
-    dassert(request.last_committed_decree_in_app <= local_committed_decree,
-            "%" PRId64 " VS %" PRId64 "",
-            request.last_committed_decree_in_app,
-            local_committed_decree);
-
-    decree learn_start_decree = request.last_committed_decree_in_app + 1;
-    dassert(learn_start_decree <= local_committed_decree + 1,
-            "%" PRId64 " VS %" PRId64 "",
-            learn_start_decree,
-            local_committed_decree + 1);
+    const decree learn_start_decree = get_learn_start_decree(request);
+    response.state.__set_learn_start_decree(learn_start_decree);
     bool delayed_replay_prepare_list = false;
 
     ddebug("%s: on_learn[%016" PRIx64 "]: learner = %s, remote_committed_decree = %" PRId64 ", "
@@ -415,6 +482,13 @@ void replica::on_learn(dsn::message_ex *msg, const learn_request &request)
         } else if (_private_log->get_learn_state(get_gpid(), learn_start_decree, response.state)) {
             ddebug("%s: on_learn[%016" PRIx64 "]: learner = %s, choose to learn private logs, "
                    "because mutation_log::get_learn_state() returns true",
+                   name(),
+                   request.signature,
+                   request.learner.to_string());
+            response.type = learn_type::LT_LOG;
+        } else if (learn_start_decree < request.last_committed_decree_in_app + 1) {
+            ddebug("%s: on_learn[%016" PRIx64 "]: learner = %s, choose to learn private logs, "
+                   "because learn_start_decree steps back for duplication",
                    name(),
                    request.signature,
                    request.learner.to_string());
@@ -520,8 +594,8 @@ void replica::on_learn_reply(error_code err, learn_request &&req, learn_response
     ddebug("%s: on_learn_reply[%016" PRIx64 "]: learnee = %s, learn_duration = %" PRIu64
            " ms, response_err = %s, remote_committed_decree = %" PRId64 ", "
            "prepare_start_decree = %" PRId64 ", learn_type = %s, learned_buffer_size = %u, "
-           "learned_file_count = %u, to_decree_included = % " PRId64
-           ", current_learning_status = %s",
+           "learned_file_count = %u, to_decree_included = %" PRId64
+           ", learn_start_decree = %" PRId64 ", current_learning_status = %s",
            name(),
            req.signature,
            resp.config.primary.to_string(),
@@ -533,6 +607,7 @@ void replica::on_learn_reply(error_code err, learn_request &&req, learn_response
            resp.state.meta.length(),
            static_cast<uint32_t>(resp.state.files.size()),
            resp.state.to_decree_included,
+           resp.state.learn_start_decree,
            enum_to_string(_potential_secondary_states.learning_status));
 
     _potential_secondary_states.learning_copy_buffer_size += resp.state.meta.length();
@@ -724,7 +799,8 @@ void replica::on_learn_reply(error_code err, learn_request &&req, learn_response
             this,
             _stub->_log->on_partition_reset(get_gpid(), _app->last_committed_decree()),
             _private_log->on_partition_reset(get_gpid(), _app->last_committed_decree()),
-            _app->last_committed_decree());
+            _app->last_committed_decree(),
+            _app->init_info().init_duplicating);
 
         // switch private log to make learning easier
         _private_log->demand_switch_file();
@@ -776,7 +852,9 @@ void replica::on_learn_reply(error_code err, learn_request &&req, learn_response
                            mu->name(),
                            existing_mutation->data.header.ballot);
                 } else {
-                    _prepare_list->prepare(mu, partition_status::PS_POTENTIAL_SECONDARY);
+                    dcheck_eq_replica(
+                        _prepare_list->prepare(mu, partition_status::PS_POTENTIAL_SECONDARY),
+                        ERR_OK);
                 }
 
                 if (cache_range.first == 0 || mu->data.header.decree < cache_range.first)
@@ -969,6 +1047,9 @@ void replica::on_copy_remote_state_completed(error_code err,
         lstate.from_decree_excluded = resp.state.from_decree_excluded;
         lstate.to_decree_included = resp.state.to_decree_included;
         lstate.meta = resp.state.meta;
+        if (resp.state.__isset.learn_start_decree) {
+            lstate.__set_learn_start_decree(resp.state.learn_start_decree);
+        }
 
         for (auto &f : resp.state.files) {
             std::string file = utils::filesystem::path_combine(_app->learn_dir(), f);
@@ -980,8 +1061,6 @@ void replica::on_copy_remote_state_completed(error_code err,
             auto start_ts = dsn_now_ns();
             err = _app->apply_checkpoint(replication_app_base::chkpt_apply_mode::learn, lstate);
             if (err == ERR_OK) {
-                _app->reset_counters_after_learning();
-
                 dassert(_app->last_committed_decree() >= _app->last_durable_decree(),
                         "invalid app state, %" PRId64 " VS %" PRId64 "",
                         _app->last_committed_decree(),
@@ -1359,13 +1438,16 @@ void replica::on_learn_completion_notification_reply(error_code err,
 
 void replica::on_add_learner(const group_check_request &request)
 {
+    _checker.only_one_thread_access();
+
     ddebug("%s: process add learner, primary = %s, ballot = %" PRId64
-           ", status = %s, last_committed_decree = %" PRId64,
+           ", status = %s, last_committed_decree = %" PRId64 ", confirmed_decree = %" PRId64,
            name(),
            request.config.primary.to_string(),
            request.config.ballot,
            enum_to_string(request.config.status),
-           request.last_committed_decree);
+           request.last_committed_decree,
+           request.confirmed_decree);
 
     if (request.config.ballot < get_ballot()) {
         dwarn("%s: on_add_learner ballot is old, skipped", name());
@@ -1380,6 +1462,8 @@ void replica::on_add_learner(const group_check_request &request)
         dassert(partition_status::PS_POTENTIAL_SECONDARY == status(),
                 "invalid partition_status, status = %s",
                 enum_to_string(status()));
+
+        _duplication_mgr->set_confirmed_decree_non_primary(request.confirmed_decree);
         init_learn(request.config.learner_signature);
     }
 }
@@ -1387,6 +1471,45 @@ void replica::on_add_learner(const group_check_request &request)
 // in non-replication thread
 error_code replica::apply_learned_state_from_private_log(learn_state &state)
 {
+    bool duplicating = is_duplicating();
+
+    //                confirmed  gced          committed
+    //                    |        |              |
+    // learner's plog: ============[-----log------]
+    //                   |
+    //                   |                            <cache>
+    // learn_state:      [-----------log-------------]------]
+    //                   |                                  |
+    // ==>               |                                  |
+    // learner's plog    |                              committed
+    // after applied:    [---------------log----------------]
+
+    if (duplicating && state.__isset.learn_start_decree &&
+        state.learn_start_decree < _app->last_committed_decree() + 1) {
+        // it means this round of learn must have stepped back
+        // to include all unconfirmed.
+
+        // move the `learn/` dir to working dir (`plog/`).
+        error_code err = _private_log->reset_from(
+            _app->learn_dir(),
+            [](int log_length, mutation_ptr &mu) { return true; },
+            [this](error_code err) {
+                tasking::enqueue(LPC_REPLICATION_ERROR,
+                                 &_tracker,
+                                 [this, err]() { handle_local_failure(err); },
+                                 get_gpid().thread_hash());
+            });
+        if (err != ERR_OK) {
+            derror_replica("failed to reset this private log with logs in learn/ dir: {}", err);
+            return err;
+        }
+
+        // only the uncommitted logs will be applied to storage.
+        learn_state tmp_state;
+        _private_log->get_learn_state(get_gpid(), _app->last_committed_decree() + 1, tmp_state);
+        state.files = tmp_state.files;
+    }
+
     int64_t offset;
     error_code err;
 
@@ -1398,33 +1521,59 @@ error_code replica::apply_learned_state_from_private_log(learn_state &state)
                            if (mu->data.header.decree == _app->last_committed_decree() + 1) {
                                // TODO: assign the returned error_code to err and check it
                                _app->apply_mutation(mu);
+
+                               _private_log->append(
+                                   mu, LPC_WRITE_REPLICATION_LOG_COMMON, &_tracker, nullptr);
                            }
                        });
 
     err = mutation_log::replay(state.files,
-                               [&plist](int log_length, mutation_ptr &mu) {
+                               [&plist, this](int log_length, mutation_ptr &mu) {
                                    auto d = mu->data.header.decree;
                                    if (d <= plist.last_committed_decree())
-                                       return false;
+                                       return true;
 
                                    auto old = plist.get_mutation_by_decree(d);
                                    if (old != nullptr &&
                                        old->data.header.ballot >= mu->data.header.ballot)
-                                       return false;
-
-                                   plist.prepare(mu, partition_status::PS_SECONDARY);
+                                       return true;
+                                   auto ec = plist.prepare(mu, partition_status::PS_SECONDARY);
+                                   dcheck_eq_replica(ec, ERR_OK);
                                    return true;
                                },
                                offset);
 
+    // update min_learn_start_decree, the position where the first round of LT_LOG starts from.
+    // we use this value to determine whether to learn back from min_confirmed_decree
+    // for duplication:
+    //
+    //                confirmed
+    //                    |
+    // learner's plog: ==[=========[--------------]
+    //                   |         |              |
+    //                   |       gced           committed
+    //     min_learn_start_decree
+    //
+    // because the learned logs (under `learn/` dir) have covered all the unconfirmed,
+    // the next round of learn will start from committed+1.
+    //
+    if (state.__isset.learn_start_decree &&
+        (_potential_secondary_states.min_learn_start_decree < 0 ||
+         _potential_secondary_states.min_learn_start_decree > state.learn_start_decree)) {
+        _potential_secondary_states.min_learn_start_decree = state.learn_start_decree;
+    }
+
     ddebug("%s: apply_learned_state_from_private_log[%016" PRIx64 "]: learnee = %s, "
            "learn_duration = %" PRIu64 " ms, apply private log files done, "
-           "file_count = %d, app_committed_decree = %" PRId64,
+           "file_count = %d, min_learn_start_decree = %" PRId64 ", learn_start_decree = %" PRId64
+           ", app_committed_decree = %" PRId64,
            name(),
            _potential_secondary_states.learning_version,
            _config.primary.to_string(),
            _potential_secondary_states.duration_ms(),
            static_cast<int>(state.files.size()),
+           _potential_secondary_states.min_learn_start_decree,
+           state.learn_start_decree,
            _app->last_committed_decree());
 
     // apply in-buffer private logs
@@ -1442,7 +1591,7 @@ error_code replica::apply_learned_state_from_private_log(learn_state &state)
                 continue;
 
             mu->set_logged();
-            plist.prepare(mu, partition_status::PS_SECONDARY);
+            dcheck_eq_replica(plist.prepare(mu, partition_status::PS_SECONDARY), ERR_OK);
             ++replay_count;
         }
 
@@ -1469,7 +1618,9 @@ error_code replica::apply_learned_state_from_private_log(learn_state &state)
                _app->last_committed_decree());
     }
 
+    // awaits for unfinished mutation writes.
+    _private_log->flush();
     return err;
 }
-}
-} // namespace
+} // namespace replication
+} // namespace dsn

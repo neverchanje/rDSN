@@ -49,6 +49,8 @@
 #include <gperftools/malloc_extension.h>
 #endif
 
+#include "dist/replication/lib/duplication/duplication_sync_timer.h"
+
 namespace dsn {
 namespace replication {
 
@@ -96,12 +98,10 @@ void replica_stub::install_perf_counters()
                                                      "closing.replica(Count)",
                                                      COUNTER_TYPE_NUMBER,
                                                      "# in replica_stub._closing_replicas");
-    _counter_replicas_total_commit_throught.init_app_counter(
-        "eon.replica_stub",
-        "replicas.commit.qps",
-        COUNTER_TYPE_RATE,
-        "app commit throughput for all replicas");
-
+    _counter_replicas_commit_qps.init_app_counter("eon.replica_stub",
+                                                  "replicas.commit.qps",
+                                                  COUNTER_TYPE_RATE,
+                                                  "server-level committed throughput");
     _counter_replicas_learning_count.init_app_counter("eon.replica_stub",
                                                       "replicas.learning.count",
                                                       COUNTER_TYPE_NUMBER,
@@ -215,6 +215,39 @@ void replica_stub::install_perf_counters()
         "recent.trigger.emergency.checkpoint.count",
         COUNTER_TYPE_VOLATILE_NUMBER,
         "trigger emergency checkpoint count in the recent period");
+
+    // <- Duplication Metrics ->
+
+    _counter_dup_log_read_in_bytes_rate.init_app_counter("eon.replica_stub",
+                                                         "dup.log_read_in_bytes_rate",
+                                                         COUNTER_TYPE_RATE,
+                                                         "reading rate of private log in bytes");
+    _counter_dup_log_mutations_read_rate.init_app_counter(
+        "eon.replica_stub",
+        "dup.log_mutations_read_rate",
+        COUNTER_TYPE_RATE,
+        "reading rate of mutations from private log");
+    _counter_dup_shipped_size_in_bytes_rate.init_app_counter(
+        "eon.replica_stub",
+        "dup.shipped_size_in_bytes_rate",
+        COUNTER_TYPE_RATE,
+        "shipping rate of private log in bytes");
+    _counter_dup_confirmed_rate.init_app_counter("eon.replica_stub",
+                                                 "dup.confirmed_rate",
+                                                 COUNTER_TYPE_RATE,
+                                                 "increasing rate of confirmed mutations");
+    _counter_dup_pending_mutations_count.init_app_counter(
+        "eon.replica_stub",
+        "dup.pending_mutations_count",
+        COUNTER_TYPE_VOLATILE_NUMBER,
+        "number of mutations pending for duplication");
+    _counter_dup_time_lag.init_app_counter(
+        "eon.replica_stub",
+        "dup.time_lag(ms)",
+        COUNTER_TYPE_NUMBER_PERCENTILES,
+        "time (in ms) lag between master and slave in the duplication");
+
+    // <- Cold Backup Metrics ->
 
     _counter_cold_backup_running_count.init_app_counter("eon.replica_stub",
                                                         "cold.backup.running.count",
@@ -651,6 +684,11 @@ void replica_stub::initialize_start()
     }
 #endif
 
+    if (!_options.duplication_disabled) {
+        _duplication_sync_timer = dsn::make_unique<duplication_sync_timer>(this);
+        _duplication_sync_timer->start();
+    }
+
     // init liveness monitor
     dassert(NS_Disconnected == _state, "");
     if (_options.fd_disabled == false) {
@@ -943,13 +981,14 @@ void replica_stub::on_group_check(const group_check_request &request,
     }
 
     ddebug("%s@%s: received group check, primary = %s, ballot = %" PRId64
-           ", status = %s, last_committed_decree = %" PRId64,
+           ", status = %s, last_committed_decree = %" PRId64 ", confirmed_decree = %" PRId64,
            request.config.pid.to_string(),
            _primary_address_str,
            request.config.primary.to_string(),
            request.config.ballot,
            enum_to_string(request.config.status),
-           request.last_committed_decree);
+           request.last_committed_decree,
+           request.confirmed_decree);
 
     replica_ptr rep = get_replica(request.config.pid);
     if (rep != nullptr) {
@@ -1018,13 +1057,14 @@ void replica_stub::on_add_learner(const group_check_request &request)
     }
 
     ddebug("%s@%s: received add learner, primary = %s, ballot = %" PRId64
-           ", status = %s, last_committed_decree = %" PRId64,
+           ", status = %s, last_committed_decree = %" PRId64 ", confirmed_decree = %" PRId64,
            request.config.pid.to_string(),
            _primary_address_str,
            request.config.primary.to_string(),
            request.config.ballot,
            enum_to_string(request.config.status),
-           request.last_committed_decree);
+           request.last_committed_decree,
+           request.confirmed_decree);
 
     replica_ptr rep = get_replica(request.config.pid);
     if (rep != nullptr) {
@@ -1245,6 +1285,7 @@ void replica_stub::set_replica_state_subscriber_for_test(replica_state_subscribe
 
 // this_ is used to hold a ref to replica_stub so we don't need to cancel the task on
 // replica_stub::close
+// ThreadPool: THREAD_POOL_REPLICATION
 void replica_stub::on_node_query_reply_scatter(replica_stub_ptr this_,
                                                const configuration_update_request &req)
 {
@@ -1266,6 +1307,7 @@ void replica_stub::on_node_query_reply_scatter(replica_stub_ptr this_,
     }
 }
 
+// ThreadPool: THREAD_POOL_REPLICATION
 void replica_stub::on_node_query_reply_scatter2(replica_stub_ptr this_, gpid id)
 {
     replica_ptr replica = get_replica(id);
@@ -2010,11 +2052,8 @@ void replica_stub::open_service()
         [this](const std::vector<std::string> &args) {
             return exec_command_on_replica(args, true, [](const replica_ptr &rep) {
                 std::map<std::string, std::string> kv_map;
-                if (rep->query_app_envs(kv_map)) {
-                    return dsn::utils::kv_map_to_string(kv_map, ',', '=');
-                } else {
-                    return std::string("call replica::query_app_envs() failed");
-                }
+                rep->query_app_envs(kv_map);
+                return dsn::utils::kv_map_to_string(kv_map, ',', '=');
             });
         });
 
@@ -2186,6 +2225,11 @@ void replica_stub::close()
     if (_config_sync_timer_task != nullptr) {
         _config_sync_timer_task->cancel(true);
         _config_sync_timer_task = nullptr;
+    }
+
+    if (_duplication_sync_timer != nullptr) {
+        _duplication_sync_timer->close();
+        _duplication_sync_timer = nullptr;
     }
 
     if (_config_query_task != nullptr) {

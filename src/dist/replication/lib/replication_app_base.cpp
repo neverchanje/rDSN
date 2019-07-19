@@ -26,6 +26,8 @@
 
 #include "replica.h"
 #include "mutation.h"
+#include "replica_stub.h"
+
 #include <dsn/dist/replication/replication_app_base.h>
 #include <dsn/utility/factory_store.h>
 #include <dsn/utility/filesystem.h>
@@ -223,7 +225,8 @@ std::string replica_init_info::to_string()
     std::ostringstream oss;
     oss << "init_ballot = " << init_ballot << ", init_durable_decree = " << init_durable_decree
         << ", init_offset_in_shared_log = " << init_offset_in_shared_log
-        << ", init_offset_in_private_log = " << init_offset_in_private_log;
+        << ", init_offset_in_private_log = " << init_offset_in_private_log
+        << ", init_duplicating = " << init_duplicating;
     return oss.str();
 }
 
@@ -309,31 +312,18 @@ replication_app_base *replication_app_base::new_storage_instance(const std::stri
         name.c_str(), PROVIDER_TYPE_MAIN, r);
 }
 
-replication_app_base::replication_app_base(replica *replica)
-    : replica_base(replica->get_gpid(), replica->name())
+replication_app_base::replication_app_base(replica *replica) : replica_base(replica)
 {
     _dir_data = utils::filesystem::path_combine(replica->dir(), "data");
     _dir_learn = utils::filesystem::path_combine(replica->dir(), "learn");
     _dir_backup = utils::filesystem::path_combine(replica->dir(), "backup");
     _last_committed_decree = 0;
     _replica = replica;
-
-    install_perf_counters();
 }
 
 bool replication_app_base::is_primary() const
 {
     return _replica->status() == partition_status::PS_PRIMARY;
-}
-
-void replication_app_base::install_perf_counters()
-{
-    // TODO: add custom perfcounters for replication_app_base
-}
-
-void replication_app_base::reset_counters_after_learning()
-{
-    // TODO: add custom perfcounters for replication_app_base
 }
 
 error_code replication_app_base::open_internal(replica *r)
@@ -384,7 +374,7 @@ error_code replication_app_base::open_new_internal(replica *r,
     auto err = open();
     if (err == ERR_OK) {
         _last_committed_decree = last_durable_decree();
-        err = update_init_info(_replica, shared_log_start, private_log_start, 0);
+        err = update_init_info(_replica, shared_log_start, private_log_start, 0, false);
     }
 
     if (err != ERR_OK) {
@@ -482,7 +472,7 @@ int replication_app_base::on_batched_write_requests(int64_t decree,
         (dsn::message_ex **)alloca(sizeof(dsn::message_ex *) * request_count);
     dsn::message_ex **faked_requests =
         (dsn::message_ex **)alloca(sizeof(dsn::message_ex *) * request_count);
-    int batched_count = 0;
+    int batched_count = 0; // write-empties are not included.
     int faked_count = 0;
     for (int i = 0; i < request_count; i++) {
         const mutation_update &update = mu->data.updates[i];
@@ -556,7 +546,7 @@ int replication_app_base::on_batched_write_requests(int64_t decree,
                batched_count);
     }
 
-    _replica->update_commit_statistics(1);
+    _replica->update_commit_qps(batched_count);
 
     return ERR_OK;
 }
@@ -564,14 +554,17 @@ int replication_app_base::on_batched_write_requests(int64_t decree,
 ::dsn::error_code replication_app_base::update_init_info(replica *r,
                                                          int64_t shared_log_offset,
                                                          int64_t private_log_offset,
-                                                         int64_t durable_decree)
+                                                         int64_t durable_decree,
+                                                         bool duplicating)
 {
     _info.crc = 0;
     _info.magic = 0xdeadbeef;
     _info.init_ballot = r->get_ballot();
     _info.init_durable_decree = durable_decree;
     _info.init_offset_in_shared_log = shared_log_offset;
-    _info.init_offset_in_private_log = private_log_offset;
+    _info.init_duplicating = duplicating;
+    // reserve all private log during duplication even they are from last ballot.
+    _info.init_offset_in_private_log = duplicating ? 0 : private_log_offset;
 
     error_code err = _info.store(r->dir());
     if (err != ERR_OK) {
@@ -586,7 +579,23 @@ int replication_app_base::on_batched_write_requests(int64_t decree,
     return update_init_info(r,
                             _info.init_offset_in_shared_log,
                             _info.init_offset_in_private_log,
-                            r->last_durable_decree());
+                            r->last_durable_decree(),
+                            _info.init_duplicating);
 }
+
+::dsn::error_code replication_app_base::update_init_info_duplicating(bool duplicating)
+{
+    return update_init_info(_replica,
+                            _info.init_offset_in_shared_log,
+                            _info.init_offset_in_private_log,
+                            _replica->last_durable_decree(),
+                            duplicating);
 }
-} // end namespace
+
+void replication_app_base::update_stub_counter_dup_time_lag(uint64_t time_lag_in_us)
+{
+    _replica->update_dup_time_lag(time_lag_in_us);
+}
+
+} // namespace replication
+} // namespace dsn

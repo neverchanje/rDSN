@@ -301,6 +301,7 @@ function(dsn_setup_system_libs)
     set(DSN_SYSTEM_LIBS
         ${DSN_SYSTEM_LIBS}
         thrift
+        fmt
         ${CMAKE_THREAD_LIBS_INIT} # the thread library found by FindThreads
         CACHE STRING "rDSN system libs" FORCE
     )
@@ -317,6 +318,7 @@ endfunction(dsn_setup_include_path)
 function(dsn_setup_link_path)
     link_directories(${BOOST_LIBRARYDIR})
     link_directories(${DSN_THIRDPARTY_ROOT}/lib)
+    link_directories(${DSN_THIRDPARTY_ROOT}/lib64)
 endfunction(dsn_setup_link_path)
 
 function(dsn_common_setup)

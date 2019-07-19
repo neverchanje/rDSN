@@ -38,6 +38,7 @@
 #include "mutation.h"
 #include "mutation_log.h"
 #include "replica_stub.h"
+#include "duplication/replica_duplicator_manager.h"
 #include <dsn/dist/fmt_logging.h>
 #include <dsn/dist/replication/replication_app_base.h>
 #include <dsn/utility/string_conv.h>
@@ -208,6 +209,7 @@ void replica::add_potential_secondary(configuration_update_request &proposal)
     _primary_states.get_replica_config(
         partition_status::PS_POTENTIAL_SECONDARY, request.config, state.signature);
     request.last_committed_decree = last_committed_decree();
+    request.confirmed_decree = _duplication_mgr->min_confirmed_decree();
 
     ddebug("%s: call one way %s to start learning with signature [%016" PRIx64 "]",
            name(),
@@ -531,14 +533,15 @@ void replica::on_update_configuration_on_meta_server_reply(
     _primary_states.reconfiguration_task = nullptr;
 }
 
-bool replica::update_app_envs(const std::map<std::string, std::string> &envs)
+// ThreadPool: THREAD_POOL_REPLICATION
+void replica::update_app_envs(const std::map<std::string, std::string> &envs)
 {
     if (_app) {
         update_app_envs_internal(envs);
         _app->update_app_envs(envs);
-        return true;
-    } else {
-        return false;
+    }
+    for (const auto &kv : envs) {
+        _extra_envs[kv.first] = kv.second;
     }
 }
 
@@ -588,13 +591,13 @@ void replica::update_app_envs_internal(const std::map<std::string, std::string> 
     }
 }
 
-bool replica::query_app_envs(/*out*/ std::map<std::string, std::string> &envs)
+void replica::query_app_envs(/*out*/ std::map<std::string, std::string> &envs)
 {
     if (_app) {
         _app->query_app_envs(envs);
-        return true;
-    } else {
-        return false;
+    }
+    for (const auto &kv : _extra_envs) {
+        envs[kv.first] = kv.second;
     }
 }
 
@@ -997,6 +1000,7 @@ bool replica::update_local_configuration_with_no_ballot_change(partition_status:
     return update_local_configuration(config, true);
 }
 
+// ThreadPool: THREAD_POOL_REPLICATION
 void replica::on_config_sync(const app_info &info, const partition_configuration &config)
 {
     ddebug("%s: configuration sync", name());
@@ -1006,6 +1010,7 @@ void replica::on_config_sync(const app_info &info, const partition_configuration
         return;
 
     update_app_envs(info.envs);
+    update_init_info_duplicating(info.duplicating);
 
     if (status() == partition_status::PS_PRIMARY ||
         nullptr != _primary_states.reconfiguration_task) {

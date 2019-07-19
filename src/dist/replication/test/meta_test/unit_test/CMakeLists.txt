@@ -2,7 +2,10 @@ set(MY_PROJ_NAME dsn.meta.test)
 
 # Source files under CURRENT project directory will be automatically included.
 # You can manually set MY_PROJ_SRC to include source files under other directories.
-file(GLOB MY_PROJ_SRC ${PROJECT_SOURCE_DIR}/src/dist/replication/meta_server/*.cpp)
+file(GLOB MY_PROJ_SRC
+        ${PROJECT_SOURCE_DIR}/src/dist/replication/meta_server/*.cpp
+        ${PROJECT_SOURCE_DIR}/src/dist/replication/meta_server/duplication/*.cpp
+        )
 set(MY_PROJ_SRC ${MY_PROJ_SRC} ../misc/misc.cpp)
 
 # Search mode for source files under CURRENT project directory?
@@ -25,7 +28,6 @@ set(MY_PROJ_LIBS dsn.replication.zookeeper_provider
                  PocoNetSSL
                  PocoJSON
                  crypto
-                 fmt
                  gtest)
 
 set(MY_PROJ_LIB_PATH "")

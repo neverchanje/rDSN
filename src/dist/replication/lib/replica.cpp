@@ -36,6 +36,8 @@
 #include <dsn/utility/string_conv.h>
 #include <dsn/utility/strings.h>
 
+#include "dist/replication/lib/duplication/replica_duplicator_manager.h"
+
 namespace dsn {
 namespace replication {
 
@@ -53,7 +55,8 @@ replica::replica(
       _chkpt_total_size(0),
       _cur_download_size(0),
       _restore_progress(0),
-      _restore_status(ERR_OK)
+      _restore_status(ERR_OK),
+      _duplication_mgr(new replica_duplicator_manager(this))
 {
     dassert(_app_info.app_type != "", "");
     dassert(stub != nullptr, "");
@@ -82,12 +85,6 @@ replica::replica(
     }
 }
 
-// void replica::json_state(std::stringstream& out) const
-//{
-//    JSON_DICT_ENTRIES(out, *this, name(), _config, _app->last_committed_decree(),
-//    _app->last_durable_decree());
-//}
-
 void replica::update_last_checkpoint_generate_time()
 {
     _last_checkpoint_generate_time_ms = dsn_now_ms();
@@ -97,9 +94,18 @@ void replica::update_last_checkpoint_generate_time()
         _last_checkpoint_generate_time_ms + rand::next_u64(max_interval_ms / 2, max_interval_ms);
 }
 
-void replica::update_commit_statistics(int count)
+//            //
+// Statistics //
+//            //
+
+void replica::update_commit_qps(int count)
 {
-    _stub->_counter_replicas_total_commit_throught->add((uint64_t)count);
+    _stub->_counter_replicas_commit_qps->add((uint64_t)count);
+}
+
+void replica::update_dup_time_lag(uint64_t time_lag_in_us)
+{
+    _stub->_counter_dup_time_lag->set(time_lag_in_us / 1000);
 }
 
 void replica::init_state()
@@ -428,6 +434,10 @@ void replica::close()
     }
 
     _counter_private_log_size.clear();
+
+    // duplication_impl may have ongoing tasks.
+    // release it before release replica.
+    _duplication_mgr.reset();
 
     ddebug("%s: replica closed, time_used = %" PRIu64 "ms", name(), dsn_now_ms() - start_time);
 }
