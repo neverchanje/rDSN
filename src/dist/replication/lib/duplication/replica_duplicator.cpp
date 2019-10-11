@@ -1,28 +1,6 @@
-/*
- * The MIT License (MIT)
- *
- * Copyright (c) 2015 Microsoft Corporation
- *
- * -=- Robust Distributed System Nucleus (rDSN) -=-
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
+// Copyright (c) 2017-present, Xiaomi, Inc.  All rights reserved.
+// This source code is licensed under the Apache License Version 2.0, which
+// can be found in the LICENSE file in the root directory of this source tree.
 
 #include "replica_duplicator.h"
 #include "load_from_private_log.h"
@@ -63,12 +41,10 @@ replica_duplicator::replica_duplicator(const duplication_entry &ent, replica *r)
 
 void replica_duplicator::start_dup()
 {
-    ddebug_replica(
-        "starting duplication {} [last_decree: {}, confirmed_decree: {}, max_gced_decree: {}]",
-        to_string(),
-        _progress.last_decree,
-        _progress.confirmed_decree,
-        get_max_gced_decree());
+    ddebug_replica("starting duplication {} [last_decree: {}, confirmed_decree: {}]",
+                   to_string(),
+                   _progress.last_decree,
+                   _progress.confirmed_decree);
 
     /// ===== pipeline declaration ===== ///
 
@@ -170,22 +146,18 @@ error_s replica_duplicator::update_progress(const duplication_progress &p)
     return error_s::ok();
 }
 
-error_s replica_duplicator::verify_start_decree(decree start_decree)
+void replica_duplicator::verify_start_decree(decree start_decree)
 {
     decree confirmed_decree = progress().confirmed_decree;
     decree last_decree = progress().last_decree;
     decree max_gced_decree = get_max_gced_decree();
-    if (max_gced_decree >= start_decree) {
-        return FMT_ERR(
-            ERR_CORRUPTION,
+    dassert(max_gced_decree < start_decree,
             "the logs haven't yet duplicated were accidentally truncated "
             "[max_gced_decree: {}, start_decree: {}, confirmed_decree: {}, last_decree: {}]",
             max_gced_decree,
             start_decree,
             confirmed_decree,
             last_decree);
-    }
-    return error_s::ok();
 }
 
 decree replica_duplicator::get_max_gced_decree() const

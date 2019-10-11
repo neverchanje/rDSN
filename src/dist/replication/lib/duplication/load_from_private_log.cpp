@@ -1,28 +1,6 @@
-/*
- * The MIT License (MIT)
- *
- * Copyright (c) 2015 Microsoft Corporation
- *
- * -=- Robust Distributed System Nucleus (rDSN) -=-
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
+// Copyright (c) 2017-present, Xiaomi, Inc.  All rights reserved.
+// This source code is licensed under the Apache License Version 2.0, which
+// can be found in the LICENSE file in the root directory of this source tree.
 
 #include <dsn/dist/fmt_logging.h>
 
@@ -35,9 +13,11 @@
 namespace dsn {
 namespace replication {
 
+static constexpr int MAX_ALLOWED_REPEATS = 3;
+
 // Fast path to next file. If next file (_current->index + 1) is invalid,
 // we try to list all files and select a new one to start (find_log_file_to_start).
-void load_from_private_log::switch_to_next_log_file()
+bool load_from_private_log::switch_to_next_log_file()
 {
     std::string new_path = fmt::format(
         "{}/log.{}.{}", _private_log->dir(), _current->index() + 1, _current_global_end_offset);
@@ -48,19 +28,20 @@ void load_from_private_log::switch_to_next_log_file()
         if (!es.is_ok()) {
             derror_replica("{}", es);
             _current = nullptr;
-            return;
+            return false;
         }
         start_from_log_file(file);
+        return true;
     } else {
         _current = nullptr;
+        return false;
     }
 }
 
 void load_from_private_log::run()
 {
     dassert_replica(_start_decree != invalid_decree, "{}", _start_decree);
-    auto err = _duplicator->verify_start_decree(_start_decree);
-    dassert_replica(err.is_ok(), err.description());
+    _duplicator->verify_start_decree(_start_decree);
 
     if (_current == nullptr) {
         find_log_file_to_start();
@@ -76,11 +57,11 @@ void load_from_private_log::run()
 
 void load_from_private_log::find_log_file_to_start()
 {
-    // the file set already excluded the useless log files during replica init.
-    auto file_map = _private_log->log_file_map();
+    // `file_map` has already excluded the useless log files during replica init.
+    auto file_map = _private_log->get_log_file_map();
 
-    // reopen the files, because the internal file handle of private_log->log_file_map()
-    // is cleared and unable to be used for us.
+    // Reopen the files. Because the internal file handle of `file_map`
+    // is cleared once WAL replay finished. They are unable to read.
     std::map<int, log_file_ptr> new_file_map;
     for (const auto &pr : file_map) {
         log_file_ptr file;
@@ -92,7 +73,7 @@ void load_from_private_log::find_log_file_to_start()
         new_file_map.emplace(pr.first, file);
     }
 
-    find_log_file_to_start(new_file_map);
+    find_log_file_to_start(std::move(new_file_map));
 }
 
 void load_from_private_log::find_log_file_to_start(std::map<int, log_file_ptr> log_file_map)
@@ -102,23 +83,22 @@ void load_from_private_log::find_log_file_to_start(std::map<int, log_file_ptr> l
         return;
     }
 
-    // ensure start decree is not compacted
-    auto begin = log_file_map.begin();
-    for (auto it = begin; it != log_file_map.end(); it++) {
+    for (auto it = log_file_map.begin(); it != log_file_map.end(); it++) {
         auto next_it = std::next(it);
         if (next_it == log_file_map.end()) {
-            // use the last file
-            start_from_log_file(it->second);
+            // use the last file if no file to read
+            if (!_current) {
+                start_from_log_file(it->second);
+            }
             return;
         }
         if (it->second->previous_log_max_decree(get_gpid()) < _start_decree &&
             _start_decree <= next_it->second->previous_log_max_decree(get_gpid())) {
+            // `start_decree` is within the range
             start_from_log_file(it->second);
-            return;
+            // find the latest file that matches the condition
         }
     }
-
-    __builtin_unreachable();
 }
 
 void load_from_private_log::replay_log_block()
@@ -127,9 +107,7 @@ void load_from_private_log::replay_log_block()
         _current,
         [this](int log_bytes_length, mutation_ptr &mu) -> bool {
             auto es = _mutation_batch.add(std::move(mu));
-            if (!es.is_ok()) {
-                dfatal_replica(es.description());
-            }
+            dassert_replica(es.is_ok(), es.description());
             _stub->_counter_dup_log_read_in_bytes_rate->add(log_bytes_length);
             _stub->_counter_dup_log_mutations_read_rate->increment();
             return true;
@@ -137,10 +115,8 @@ void load_from_private_log::replay_log_block()
         _start_offset,
         _current_global_end_offset);
     if (!err.is_ok()) {
-        // EOF appears only when end of log file is reached.
-        if (err.code() == ERR_HANDLE_EOF) {
-            switch_to_next_log_file();
-            repeat(_repeat_delay);
+        if (err.code() == ERR_HANDLE_EOF && switch_to_next_log_file()) {
+            repeat();
             return;
         }
 
@@ -152,9 +128,8 @@ void load_from_private_log::replay_log_block()
                            err,
                            _current->path(),
                            _start_offset);
-            start_from_log_file(_current);
+            find_log_file_to_start();
         }
-
         repeat(_repeat_delay);
         return;
     }

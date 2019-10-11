@@ -1,28 +1,6 @@
-/*
- * The MIT License (MIT)
- *
- * Copyright (c) 2015 Microsoft Corporation
- *
- * -=- Robust Distributed System Nucleus (rDSN) -=-
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
+// Copyright (c) 2017-present, Xiaomi, Inc.  All rights reserved.
+// This source code is licensed under the Apache License Version 2.0, which
+// can be found in the LICENSE file in the root directory of this source tree.
 
 #pragma once
 
@@ -69,9 +47,9 @@ class replica_stub;
 // no read lock required (of course write lock is necessary when
 // reader could be in other thread).
 //
-// TODO(wutao1): optimize for multi-duplication
-// Currently we create duplicator for every duplication.
-// They're isolated even if they share the same private log.
+// TODO(wutao1): Optimization for multi-duplication
+//               Currently we create duplicator for each duplication.
+//               They're isolated even if they share the same private log.
 class replica_duplicator : public replica_base, public pipeline::base
 {
 public:
@@ -89,7 +67,7 @@ public:
 
     dupid_t id() const { return _id; }
 
-    const std::string &remote_cluster_address() const { return _remote_cluster_name; }
+    const std::string &remote_cluster_name() const { return _remote_cluster_name; }
 
     // Thread-safe
     duplication_progress progress() const
@@ -115,8 +93,11 @@ public:
 
     std::string to_string() const;
 
-    // to ensure mutation logs after start_decree is available for duplication
-    error_s verify_start_decree(decree start_decree);
+    // To ensure mutation logs after start_decree is available
+    // for duplication. If not, it means the eventual consistency
+    // of duplication is no longer guaranteed due to the missing logs.
+    // For current implementation the system will fail fast.
+    void verify_start_decree(decree start_decree);
 
     decree get_max_gced_decree() const;
 

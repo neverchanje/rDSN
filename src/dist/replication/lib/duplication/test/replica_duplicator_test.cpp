@@ -63,7 +63,7 @@ public:
 
         auto duplicator = make_unique<replica_duplicator>(dup_ent, _replica.get());
         ASSERT_EQ(duplicator->id(), dupid);
-        ASSERT_EQ(duplicator->remote_cluster_address(), remote);
+        ASSERT_EQ(duplicator->remote_cluster_name(), remote);
         ASSERT_EQ(duplicator->_status, status);
         ASSERT_EQ(duplicator->progress().confirmed_decree, confirmed_decree);
         ASSERT_EQ(duplicator->progress().last_decree, confirmed_decree);

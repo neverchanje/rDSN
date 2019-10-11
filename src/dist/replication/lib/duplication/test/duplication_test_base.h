@@ -1,31 +1,10 @@
-/*
- * The MIT License (MIT)
- *
- * Copyright (c) 2015 Microsoft Corporation
- *
- * -=- Robust Distributed System Nucleus (rDSN) -=-
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
+// Copyright (c) 2017-present, Xiaomi, Inc.  All rights reserved.
+// This source code is licensed under the Apache License Version 2.0, which
+// can be found in the LICENSE file in the root directory of this source tree.
 
 #pragma once
 
+#include "dist/replication/lib/mutation_log_utils.h"
 #include "dist/replication/test/replica_test/unit_test/replica_test_base.h"
 #include "dist/replication/lib/duplication/replica_duplicator.h"
 #include "dist/replication/lib/duplication/replica_duplicator_manager.h"
@@ -33,8 +12,9 @@
 namespace dsn {
 namespace replication {
 
-struct duplication_test_base : replica_test_base
+class duplication_test_base : public replica_test_base
 {
+public:
     duplication_test_base()
     {
         mutation_duplicator::creator = [](replica_base *r, dsn::string_view, dsn::string_view) {
@@ -64,6 +44,14 @@ struct duplication_test_base : replica_test_base
         dup_ent.status = duplication_status::DS_PAUSE;
         dup_ent.progress[_replica->get_gpid().get_partition_index()] = confirmed;
         return make_unique<replica_duplicator>(dup_ent, _replica.get());
+    }
+
+    std::map<int, log_file_ptr> open_log_file_map(const std::string &log_dir)
+    {
+        std::map<int, log_file_ptr> log_file_map;
+        error_s err = log_utils::open_log_file_map(log_dir, log_file_map);
+        EXPECT_EQ(err, error_s::ok());
+        return log_file_map;
     }
 };
 

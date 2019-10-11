@@ -1,6 +1,6 @@
 set(MY_PROJ_NAME dsn_replica_dup_test)
 
-set(MY_PROJ_SRC "../../../test/replica_test/unit_test/test_utils.cpp")
+set(MY_PROJ_SRC "")
 
 set(MY_SRC_SEARCH_MODE "GLOB")
 

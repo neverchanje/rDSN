@@ -193,7 +193,7 @@ public:
                              replay_callback callback,
                              /*out*/ int64_t &end_offset);
 
-    // Reads a series of mutations from the log file(from current offset of `log`),
+    // Reads a series of mutations from the log file (from `start_offset` of `log`),
     // and iterates over the mutations, executing the provided `callback` for each
     // mutation entry.
     // Since the logs are packed into multiple blocks, this function retrieves
@@ -201,13 +201,11 @@ public:
     // `log_private_batch_buffer_kb` and `log_private_batch_buffer_count`.
     //
     // Parameters:
+    // - callback: the callback to execute for each mutation.
     // - start_offset: file offset to start.
     //
     // Returns:
     // - ERR_INVALID_DATA: if the loaded data is incorrect or invalid.
-    //
-    // SEE:
-    // - mutation_log::replay(log_file_ptr, replay_callback, int64_t &)
     //
     static error_s replay_block(log_file_ptr &log,
                                 replay_callback &callback,
@@ -315,18 +313,21 @@ public:
     // thread safe
     decree max_commit_on_disk() const;
 
-    // maximum decree that is garbage collected
-    // thread safe
-    decree max_gced_decree(gpid gpid, int64_t valid_start_offset) const;
-
-    // Returns `invalid_decree` when plog directory is empty, maybe data corruption occurred
-    // and the entire directory was tagged ".err".
+    // Decree of the maximum garbage-collected mutation.
+    // For example, given mutations [20, 100], if [20, 50] is garbage-collected,
+    // the max_gced_decree=50.
+    // In production the mutations may not be ordered with the file-id. Given 3 log files:
+    //   #1:[20, 30], #2:[30, 50], #3:[10, 50]
+    // The third file is learned from primary of new epoch. Since it contains mutations smaller
+    // than the others, the max_gced_decree = 9.
+    // Returns `invalid_decree` when plog directory is empty.
+    //
     // thread-safe & private log only
     decree max_gced_decree(gpid gpid) const;
     decree max_gced_decree_no_lock(gpid gpid) const;
 
     // thread-safe
-    std::map<int, log_file_ptr> log_file_map() const;
+    std::map<int, log_file_ptr> get_log_file_map() const;
 
     // check the consistence of valid_start_offset
     // thread safe
@@ -649,7 +650,9 @@ public:
     //
     // others
     //
-    // reset file_streamer to point to the start of this log file.
+
+    // Reset file_streamer to point to `offset`.
+    // offset=0 means the start of this log file.
     void reset_stream(size_t offset = 0);
     // end offset in the global space: end_offset = start_offset + file_size
     int64_t end_offset() const { return _end_offset.load(); }

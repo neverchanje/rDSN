@@ -33,7 +33,7 @@
 #include <dsn/utility/fail_point.h>
 #include <dsn/dist/fmt_logging.h>
 #include <dsn/tool-api/async_calls.h>
-#include <fmt/format.h>
+#include <dsn/dist/fmt_logging.h>
 
 namespace dsn {
 namespace replication {
@@ -143,7 +143,7 @@ void mutation_log_shared::write_pending_mutations(bool release_lock_required)
     // seperate commit_log_block from within the lock
     _slock.unlock();
 
-    task_ptr ret = pr.first->commit_log_block(
+    pr.first->commit_log_block(
         *blk,
         start_offset,
         LPC_WRITE_REPLICATION_LOG_SHARED,
@@ -209,9 +209,6 @@ void mutation_log_shared::write_pending_mutations(bool release_lock_required)
             }
         },
         0);
-    if (ret == nullptr) {
-        _is_writing.store(false, std::memory_order_release);
-    }
 }
 
 ////////////////////////////////////////////////////
@@ -387,7 +384,7 @@ void mutation_log_private::write_pending_mutations(bool release_lock_required)
     // seperate commit_log_block from within the lock
     _plock.unlock();
 
-    task_ptr ret = pr.first->commit_log_block(
+    pr.first->commit_log_block(
         *blk,
         start_offset,
         LPC_WRITE_REPLICATION_LOG_PRIVATE,
@@ -449,9 +446,6 @@ void mutation_log_private::write_pending_mutations(bool release_lock_required)
             }
         },
         0);
-    if (ret == nullptr) {
-        _is_writing.store(false, std::memory_order_release);
-    }
 }
 
 error_code mutation_log_private::reset_from(const std::string &dir,
@@ -905,206 +899,6 @@ std::pair<log_file_ptr, int64_t> mutation_log::mark_new_offset(size_t size,
     return std::make_pair(_current_log_file, write_start_offset);
 }
 
-namespace internal {
-
-inline static error_s read_log_block(log_file_ptr &log,
-                                     int64_t &end_offset,
-                                     std::unique_ptr<binary_reader> &reader,
-                                     blob &bb)
-{
-    FAIL_POINT_INJECT_F("mutation_log_read_log_block", [](string_view) -> error_s {
-        return error_s::make(ERR_INCOMPLETE_DATA, "mutation_log_read_log_block");
-    });
-
-    error_code err = log->read_next_log_block(bb);
-    if (err != ERR_OK) {
-        return error_s::make(err, "failed to read log block");
-    }
-    reader = dsn::make_unique<binary_reader>(bb);
-    end_offset += sizeof(log_block_header);
-
-    return error_s::ok();
-}
-
-} // namespace internal
-
-/*static*/ error_s mutation_log::replay_block(log_file_ptr &log,
-                                              replay_callback &callback,
-                                              size_t start_offset,
-                                              int64_t &end_offset)
-{
-    FAIL_POINT_INJECT_F("mutation_log_replay_block", [](string_view) -> error_s {
-        return error_s::make(ERR_INCOMPLETE_DATA, "mutation_log_replay_block");
-    });
-
-    blob bb;
-    std::unique_ptr<binary_reader> reader;
-
-    // read from start
-    int64_t global_start_offset = start_offset + log->start_offset();
-    if (global_start_offset != end_offset) {
-        end_offset = global_start_offset;
-    }
-    log->reset_stream(start_offset);
-
-    error_s err = internal::read_log_block(log, end_offset, reader, bb);
-    if (!err.is_ok()) {
-        return err;
-    }
-
-    // first block is log_file_header
-    if (global_start_offset == log->start_offset()) {
-        end_offset += log->read_file_header(*reader);
-        if (!log->is_right_header()) {
-            return error_s::make(ERR_INVALID_DATA, "failed to read log file header");
-        }
-    }
-
-    while (!reader->is_eof()) {
-        auto old_size = reader->get_remaining_size();
-        mutation_ptr mu = mutation::read_from(*reader, nullptr);
-        dassert(nullptr != mu, "");
-        mu->set_logged();
-
-        if (mu->data.header.log_offset != end_offset) {
-            return error_s::make(ERR_INVALID_DATA,
-                                 fmt::format("offset mismatch in log entry and mutation {} vs {}",
-                                             end_offset,
-                                             mu->data.header.log_offset));
-        }
-
-        int log_length = old_size - reader->get_remaining_size();
-        callback(log_length, mu);
-
-        end_offset += log_length;
-    }
-
-    return error_s::ok();
-}
-
-/*static*/ error_code mutation_log::replay(log_file_ptr log,
-                                           replay_callback callback,
-                                           /*out*/ int64_t &end_offset)
-{
-    end_offset = log->start_offset();
-    ddebug("start to replay mutation log %s, offset = [%" PRId64 ", %" PRId64 "), size = %" PRId64,
-           log->path().c_str(),
-           log->start_offset(),
-           log->end_offset(),
-           log->end_offset() - log->start_offset());
-
-    ::dsn::blob bb;
-    log->reset_stream();
-    error_s err;
-    size_t start_offset = 0;
-    while (true) {
-        err = replay_block(log, callback, start_offset, end_offset);
-        if (!err.is_ok()) {
-            break;
-        }
-
-        start_offset = static_cast<size_t>(end_offset - log->start_offset());
-    }
-
-    ddebug("finish to replay mutation log (%s) [err: %s]",
-           log->path().c_str(),
-           err.description().c_str());
-    return err.code();
-}
-
-/*static*/ error_code mutation_log::replay(std::vector<std::string> &log_files,
-                                           replay_callback callback,
-                                           /*out*/ int64_t &end_offset)
-{
-    std::map<int, log_file_ptr> logs;
-    for (auto &fpath : log_files) {
-        error_code err;
-        log_file_ptr log = log_file::open_read(fpath.c_str(), err);
-        if (log == nullptr) {
-            if (err == ERR_HANDLE_EOF || err == ERR_INCOMPLETE_DATA ||
-                err == ERR_INVALID_PARAMETERS) {
-                dinfo("skip file %s during log replay", fpath.c_str());
-                continue;
-            } else {
-                return err;
-            }
-        }
-
-        dassert(
-            logs.find(log->index()) == logs.end(), "invalid log_index, index = %d", log->index());
-        logs[log->index()] = log;
-    }
-
-    return replay(logs, callback, end_offset);
-}
-
-/*static*/ error_code mutation_log::replay(std::map<int, log_file_ptr> &logs,
-                                           replay_callback callback,
-                                           /*out*/ int64_t &end_offset)
-{
-    int64_t g_start_offset = 0;
-    int64_t g_end_offset = 0;
-    error_code err = ERR_OK;
-    log_file_ptr last;
-
-    if (logs.size() > 0) {
-        g_start_offset = logs.begin()->second->start_offset();
-        g_end_offset = logs.rbegin()->second->end_offset();
-    }
-
-    error_s error = log_utils::check_log_files_continuity(logs);
-    if (!error.is_ok()) {
-        derror_f("check_log_files_continuity failed: {}", error);
-        return error.code();
-    }
-
-    end_offset = g_start_offset;
-
-    for (auto &kv : logs) {
-        log_file_ptr &log = kv.second;
-
-        if (log->start_offset() != end_offset) {
-            derror("offset mismatch in log file offset and global offset %" PRId64 " vs %" PRId64,
-                   log->start_offset(),
-                   end_offset);
-            return ERR_INVALID_DATA;
-        }
-
-        last = log;
-        err = mutation_log::replay(log, callback, end_offset);
-
-        log->close();
-
-        if (err == ERR_OK || err == ERR_HANDLE_EOF) {
-            // do nothing
-        } else if (err == ERR_INCOMPLETE_DATA) {
-            // If the file is not corrupted, it may also return the value of ERR_INCOMPLETE_DATA.
-            // In this case, the correctness is relying on the check of start_offset.
-            dwarn("delay handling error: %s", err.to_string());
-        } else {
-            // for other errors, we should break
-            break;
-        }
-    }
-
-    if (err == ERR_OK || err == ERR_HANDLE_EOF) {
-        // the log may still be written when used for learning
-        dassert(g_end_offset <= end_offset,
-                "make sure the global end offset is correct: %" PRId64 " vs %" PRId64,
-                g_end_offset,
-                end_offset);
-        err = ERR_OK;
-    } else if (err == ERR_INCOMPLETE_DATA) {
-        // ignore the last incomplate block
-        err = ERR_OK;
-    } else {
-        // bad error
-        derror("replay mutation log failed: %s", err.to_string());
-    }
-
-    return err;
-}
-
 decree mutation_log::max_decree(gpid gpid) const
 {
     zauto_lock l(_lock);
@@ -1125,38 +919,6 @@ decree mutation_log::max_commit_on_disk() const
     zauto_lock l(_lock);
     dassert(_is_private, "this method is only valid for private logs");
     return _private_max_commit_on_disk;
-}
-
-decree mutation_log::max_gced_decree(gpid gpid, int64_t valid_start_offset) const
-{
-    check_valid_start_offset(gpid, valid_start_offset);
-
-    zauto_lock l(_lock);
-
-    if (_log_files.size() == 0) {
-        if (_is_private)
-            return _private_log_info.max_decree;
-        else {
-            auto it = _shared_log_info_map.find(gpid);
-            if (it != _shared_log_info_map.end())
-                return it->second.max_decree;
-            else
-                return 0;
-        }
-    } else {
-        for (auto &log : _log_files) {
-            // when invalid log exits, all new logs are preserved (not gced)
-            if (valid_start_offset > log.second->start_offset())
-                return 0;
-
-            auto it = log.second->previous_log_max_decrees().find(gpid);
-            if (it != log.second->previous_log_max_decrees().end()) {
-                return it->second.max_decree;
-            } else
-                return 0;
-        }
-        return 0;
-    }
 }
 
 decree mutation_log::max_gced_decree(gpid gpid) const
@@ -1231,12 +993,15 @@ int64_t mutation_log::on_partition_reset(gpid gpid, decree max_decree)
         dassert(_private_gpid == gpid, "replica gpid does not match");
         replica_log_info old_info = _private_log_info;
         _private_log_info.max_decree = max_decree;
-        _private_log_info.valid_start_offset = 0;
-        dwarn("replica %d.%d has changed private log max_decree from %" PRId64 " to %" PRId64,
+        _private_log_info.valid_start_offset = _global_end_offset;
+        dwarn("replica %d.%d has changed private log max_decree from %" PRId64 " to %" PRId64
+              ", valid_start_offset from %" PRId64 " to %" PRId64,
               gpid.get_app_id(),
               gpid.get_partition_index(),
               old_info.max_decree,
-              _private_log_info.max_decree);
+              _private_log_info.max_decree,
+              old_info.valid_start_offset,
+              _private_log_info.valid_start_offset);
     } else {
         replica_log_info info(max_decree, _global_end_offset);
         auto it = _shared_log_info_map.insert(replica_log_info_map::value_type(gpid, info));
@@ -1280,10 +1045,7 @@ void mutation_log::update_max_decree_no_lock(gpid gpid, decree d)
             dassert(false, "replica has not been registered in the log before");
         }
     } else {
-        dassert(gpid == _private_gpid,
-                "replica gpid does not match [%s vs %s]",
-                gpid.to_string(),
-                _private_gpid.to_string());
+        dcheck_eq(gpid, _private_gpid);
         if (d > _private_log_info.max_decree) {
             _private_log_info.max_decree = d;
         }
@@ -1325,11 +1087,9 @@ bool mutation_log::get_learn_state(gpid gpid, decree start, /*out*/ learn_state 
 
         if (state.meta.length() == 0 && start > _private_log_info.max_decree) {
             // no memory data and no disk data
-            ddebug_f("gpid({}.{}) get_learn_state returns false, state.meta.length={}, "
+            ddebug_f("gpid({}) get_learn_state returns false"
                      "learn_start_decree={}, max_decree_in_private_log={}",
-                     gpid.get_app_id(),
-                     gpid.get_partition_index(),
-                     state.meta.length(),
+                     gpid,
                      start,
                      _private_log_info.max_decree);
             return false;
@@ -1491,6 +1251,12 @@ int mutation_log::garbage_collection(gpid gpid,
             // not break, go to update max decree
         }
 
+        // reserve if the file is covered by both reserve_max_size and reserve_max_time
+        else if (should_reserve_file(
+                     log, already_reserved_size, reserve_max_size, reserve_max_time)) {
+            // not break, go to update max decree
+        }
+
         // log is invalid, ok to delete
         else if (valid_start_offset >= log->end_offset()) {
             dinfo("gc_private @ %d.%d: max_offset for %s is %" PRId64 " vs %" PRId64
@@ -1502,12 +1268,6 @@ int mutation_log::garbage_collection(gpid gpid,
                   mark_it->second->end_offset(),
                   valid_start_offset);
             break;
-        }
-
-        // reserve if the file is covered by both reserve_max_size and reserve_max_time
-        else if (should_reserve_file(
-                     log, already_reserved_size, reserve_max_size, reserve_max_time)) {
-            // not break, go to update max decree
         }
 
         // all decrees are durable, ok to delete
@@ -1895,7 +1655,7 @@ int mutation_log::garbage_collection(const replica_log_info_map &gc_condition,
     return reserved_log_count;
 }
 
-std::map<int, log_file_ptr> mutation_log::log_file_map() const
+std::map<int, log_file_ptr> mutation_log::get_log_file_map() const
 {
     zauto_lock l(_lock);
     return _log_files;
@@ -1939,11 +1699,12 @@ public:
     // possible error_code:
     //  ERR_OK                      result would always size as expected
     //  ERR_HANDLE_EOF              if there are not enough data in file. result would still be
-    //  filled with possible data
+    //                              filled with possible data
     //  ERR_FILE_OPERATION_FAILED   filesystem failure
     error_code read_next(size_t size, /*out*/ blob &result)
     {
         binary_writer writer(size);
+
 #define TRY(x)                                                                                     \
     do {                                                                                           \
         auto _x = (x);                                                                             \
@@ -1952,6 +1713,7 @@ public:
             return _x;                                                                             \
         }                                                                                          \
     } while (0)
+
         TRY(_current_buffer->wait_ongoing_task());
         if (size < _current_buffer->length()) {
             result.assign(_current_buffer->_buffer.get(), _current_buffer->_begin, size);
@@ -2007,7 +1769,8 @@ private:
     }
 
     // buffer size, in bytes
-    static const size_t block_size_bytes = 1024 * 1024;
+    // TODO(wutao1): call it BLOCK_BYTES_SIZE
+    static constexpr size_t block_size_bytes = 1024 * 1024; // 1MB
     struct buffer_t
     {
         std::unique_ptr<char[]> _buffer; // with block_size
@@ -2218,8 +1981,7 @@ void log_file::flush() const
 
 error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
 {
-    dassert(_is_read, "log file must be in read mode");
-    dassert(_stream, "file_stream must be initiated");
+    dassert(_is_read, "log file must be of read mode");
     auto err = _stream->read_next(sizeof(log_block_header), bb);
     if (err != ERR_OK || bb.length() != sizeof(log_block_header)) {
         if (err == ERR_OK || err == ERR_HANDLE_EOF) {
