@@ -4,22 +4,24 @@
 
 namespace dsn {
 
-binary_reader::binary_reader(const blob &bb) { init(bb); }
-binary_reader::binary_reader(blob &&bb) { init(std::move(bb)); }
+binary_reader::binary_reader(blob bb) { init(std::move(bb)); }
 
-void binary_reader::init(const blob &bb)
+binary_reader::binary_reader(std::vector<blob> fragments)
 {
-    _blob = bb;
-    _size = bb.length();
-    _ptr = bb.data();
-    _remaining_size = _size;
+    assert(!fragments.empty()); // no data to read
+    init(std::move(fragments));
 }
 
-void binary_reader::init(blob &&bb)
+void binary_reader::init(blob bb) { init(std::vector<blob>({std::move(bb)})); }
+
+void binary_reader::init(std::vector<blob> fragments)
 {
-    _blob = std::move(bb);
-    _size = _blob.length();
-    _ptr = _blob.data();
+    _fragments = std::move(fragments);
+    _front_ref = _fragments[0];
+    _size = 0;
+    for (const blob &frag : _fragments) {
+        _size += frag.length();
+    }
     _remaining_size = _size;
 }
 
@@ -32,7 +34,7 @@ int binary_reader::read(/*out*/ std::string &s)
     s.resize(len, 0);
 
     if (len > 0) {
-        int x = read((char *)&s[0], len);
+        int x = read(&s[0], len);
         return x == 0 ? x : (x + sizeof(len));
     } else {
         return static_cast<int>(sizeof(len));
@@ -44,42 +46,40 @@ int binary_reader::read(blob &blob)
     int len;
     if (0 == read(len))
         return 0;
-
     return read(blob, len);
 }
 
 int binary_reader::read(blob &blob, int len)
 {
-    if (len <= get_remaining_size()) {
-        blob = _blob.range(static_cast<int>(_ptr - _blob.data()), len);
-
-        // optimization: zero-copy
-        if (!blob.buffer_ptr()) {
-            std::shared_ptr<char> buffer(::dsn::utils::make_shared_array<char>(len));
-            memcpy(buffer.get(), blob.data(), blob.length());
-            blob = ::dsn::blob(buffer, 0, blob.length());
-        }
-
-        _ptr += len;
-        _remaining_size -= len;
-        return len + sizeof(len);
-    } else {
-        assert(false);
-        return 0;
+    if (blob.length() < len) { // expand the capacity
+        blob = blob::create_empty(len);
     }
+    return read(blob.mutable_data(), len);
 }
 
 int binary_reader::read(char *buffer, int sz)
 {
-    if (sz <= get_remaining_size()) {
-        memcpy((void *)buffer, _ptr, sz);
-        _ptr += sz;
-        _remaining_size -= sz;
-        return sz;
-    } else {
-        assert(false);
-        return 0;
+    assert(get_remaining_size() >= sz);
+
+    int remained = sz;
+    while (remained > 0) {
+        if (_front_ref.empty()) {
+            assert(_ref_idx + 1 < _fragments.size());
+            _front_ref = _fragments[++_ref_idx]; // switch to next fragment
+        }
+        size_t read_sz;
+        if (_front_ref.size() >= remained) { // the fragment has enough data to read
+            read_sz = remained;
+        } else {
+            read_sz = _front_ref.size();
+        }
+        memcpy(buffer, _front_ref.data(), read_sz);
+        _front_ref.remove_prefix(read_sz);
+        _remaining_size -= read_sz;
+        buffer += read_sz;
+        remained -= read_sz;
     }
+    return sz;
 }
 
 } // namespace dsn

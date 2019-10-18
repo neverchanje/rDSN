@@ -77,6 +77,8 @@ public:
         return blob(std::move(buf), 0, static_cast<unsigned int>(s->length()));
     }
 
+    static blob create_empty(size_t cap) { return create_from_bytes(std::string(cap, '\0')); }
+
     void assign(const std::shared_ptr<char> &buffer, int offset, unsigned int length)
     {
         _holder = buffer;
@@ -103,6 +105,10 @@ public:
     }
 
     const char *data() const noexcept { return _data; }
+
+    char *mutable_data() noexcept { return const_cast<char *>(_data); }
+
+    bool empty() const { return _length == 0; }
 
     unsigned int length() const noexcept { return _length; }
     unsigned int size() const noexcept { return _length; }

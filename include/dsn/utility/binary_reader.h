@@ -2,25 +2,22 @@
 
 #include <cstring>
 #include <dsn/utility/blob.h>
+#include <dsn/utility/string_view.h>
 
 namespace dsn {
+
+/// A non-continuous constant buffer that can be read into an array of values.
+/// \inherit dsn::rpc_read_stream
 class binary_reader
 {
 public:
-    // given bb on ctor
-    binary_reader(const blob &blob);
-    binary_reader(blob &&blob);
+    explicit binary_reader(blob blob);
 
-    // or delayed init
-    binary_reader() {}
+    explicit binary_reader(std::vector<blob> fragments);
 
-    virtual ~binary_reader() {}
+    virtual ~binary_reader() = default;
 
-    void init(const blob &bb);
-    void init(blob &&bb);
-
-    template <typename T>
-    int read_pod(/*out*/ T &val);
+    /// \return how many bytes being read
     template <typename T>
     int read(/*out*/ T &val)
     {
@@ -43,31 +40,41 @@ public:
     int read(blob &blob);
     int read(blob &blob, int len);
 
-    blob get_buffer() const { return _blob; }
-    blob get_remaining_buffer() const { return _blob.range(static_cast<int>(_ptr - _blob.data())); }
-    bool is_eof() const { return _ptr >= _blob.data() + _size; }
+    template <typename T>
+    int read_pod(/*out*/ T &val)
+    {
+        if (sizeof(T) <= get_remaining_size()) {
+            auto value_buf = reinterpret_cast<char *>(&val);
+            read(value_buf, sizeof(T));
+            return sizeof(T);
+        } else {
+            // read beyond the end of buffer
+            assert(false);
+            return 0;
+        }
+    }
+
+    blob get_buffer() const
+    {
+        assert(_fragments.size() == 1);
+        return _fragments[0];
+    }
+    bool is_eof() const { return _remaining_size == 0; }
     int total_size() const { return _size; }
     int get_remaining_size() const { return _remaining_size; }
 
+protected:
+    binary_reader() = default;
+    void init(blob bb);
+    void init(std::vector<blob> fragments);
+
 private:
-    blob _blob;
-    int _size;
-    const char *_ptr;
-    int _remaining_size;
+    std::vector<blob> _fragments;
+    string_view _front_ref;
+    size_t _ref_idx{0}; // the index of _front_ref in _fragments
+
+    size_t _size{0};
+    size_t _remaining_size{0};
 };
 
-template <typename T>
-inline int binary_reader::read_pod(/*out*/ T &val)
-{
-    if (sizeof(T) <= get_remaining_size()) {
-        memcpy((void *)&val, _ptr, sizeof(T));
-        _ptr += sizeof(T);
-        _remaining_size -= sizeof(T);
-        return static_cast<int>(sizeof(T));
-    } else {
-        // read beyond the end of buffer
-        assert(false);
-        return 0;
-    }
-}
-}
+} // namespace dsn
