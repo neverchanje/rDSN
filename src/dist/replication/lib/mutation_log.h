@@ -76,11 +76,11 @@ typedef std::unordered_map<gpid, replica_log_info> replica_log_info_map;
 // each block in log file has a log_block_header
 struct log_block_header
 {
-    int32_t magic;    // 0xdeadbeef
-    int32_t length;   // block data length (not including log_block_header)
-    int32_t body_crc; // block data crc (not including log_block_header)
-    uint32_t
-        local_offset; // start offset of the block (including log_block_header) in this log file
+    int32_t magic{0};         // 0xdeadbeef
+    int32_t length{0};        // block data length (not including log_block_header)
+    int32_t body_crc{0};      // block data crc (not including log_block_header)
+    uint32_t local_offset{0}; // start offset of the block (including log_block_header)
+                              // in this log file
 };
 
 // each log file has a log_file_header stored at the beginning of the first block's data content
@@ -699,7 +699,7 @@ public:
     void set_last_write_time(uint64_t last_write_time) { _last_write_time = last_write_time; }
     uint64_t last_write_time() const { return _last_write_time; }
 
-    const disk_file *file_handle() const { return _handle; }
+    disk_file *file_handle() { return _handle; }
 
 private:
     // make private, user should create log_file through open_read() or open_write()

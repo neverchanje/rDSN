@@ -59,29 +59,39 @@ TEST(core, get_last_component)
 TEST(core, crc)
 {
     char buffer[24];
-    for (int i = 0; i < sizeof(buffer) / sizeof(char); i++) {
-        buffer[i] = rand::next_u32(0, 200);
+    for (char &c : buffer) {
+        c = rand::next_u32(0, 200);
     }
 
     auto c1 = dsn::utils::crc32_calc(buffer, 12, 0);
     auto c2 = dsn::utils::crc32_calc(buffer + 12, 12, c1);
     auto c3 = dsn::utils::crc32_calc(buffer, 24, 0);
+    ASSERT_EQ(c3, c2);
     auto c4 = dsn::utils::crc32_concat(0, 0, c1, 12, c1, c2, 12);
-    EXPECT_TRUE(c3 == c4);
-}
+    ASSERT_EQ(c3, c4);
 
-TEST(core, binary_io)
-{
-    int value = 0xdeadbeef;
-    binary_writer writer;
-    writer.write(value);
+    // ensures "crc_concat(0, str1, str2, str3...) == crc_calc(str1##str2##str3##...)"
+    char buffer2[4096];
+    for (char &c : buffer2) {
+        c = rand::next_u32(0, 200);
+    }
+    uint32_t mono_crc32 = crc32_calc(buffer2, 4096, 0);
+    uint32_t frag_crc32 = 0;
+    for (int i = 0; i < 4096; i += 4) {
+        // calculate crc32 for every 4 bytes and concatenate them together
+        uint32_t tmp_crc = crc32_calc(buffer2 + i, 4, frag_crc32);
+        frag_crc32 = crc32_concat(0, 0, frag_crc32, i, frag_crc32, tmp_crc, 4);
+    }
+    ASSERT_EQ(mono_crc32, frag_crc32);
 
-    auto buf = writer.get_buffer();
-    binary_reader reader(buf);
-    int value3;
-    reader.read(value3);
-
-    EXPECT_TRUE(value3 == value);
+    // ensures "crc_concat(0, str) == crc_calc(str)"
+    char buffer3[1023];
+    for (char &c : buffer3) {
+        c = rand::next_u32(0, 200);
+    }
+    uint32_t crc_original = utils::crc32_calc(buffer3, 1023, 0);
+    uint32_t crc_concat_0 = utils::crc32_concat(0, 0, 0, 0, 0, crc_original, 1023);
+    ASSERT_EQ(crc_concat_0, crc_original);
 }
 
 TEST(core, split_args)

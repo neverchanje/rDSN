@@ -28,6 +28,7 @@
 
 #include <fcntl.h>
 #include <cstdlib>
+#include <dsn/utility/smart_pointers.h>
 
 namespace dsn {
 namespace tools {
@@ -36,7 +37,6 @@ native_linux_aio_provider::native_linux_aio_provider(disk_engine *disk,
                                                      aio_provider *inner_provider)
     : aio_provider(disk, inner_provider)
 {
-
     memset(&_ctx, 0, sizeof(_ctx));
     auto ret = io_setup(128, &_ctx); // 128 concurrent events
     dassert(ret == 0, "io_setup error, ret = %d", ret);
@@ -49,7 +49,7 @@ native_linux_aio_provider::~native_linux_aio_provider()
     }
     _is_running = false;
 
-    auto ret = io_destroy(_ctx);
+    int ret = io_destroy(_ctx);
     dassert(ret == 0, "io_destroy error, ret = %d", ret);
 
     _worker.join();
@@ -93,12 +93,7 @@ error_code native_linux_aio_provider::flush(dsn_handle_t fh)
     }
 }
 
-aio_context *native_linux_aio_provider::prepare_aio_context(aio_task *tsk)
-{
-    return new linux_disk_aio_context(tsk);
-}
-
-void native_linux_aio_provider::aio(aio_task *aio_tsk) { aio_internal(aio_tsk, true); }
+void native_linux_aio_provider::aio(aio_task *aio_tsk) { aio_internal(aio_tsk); }
 
 void native_linux_aio_provider::get_event()
 {
@@ -116,23 +111,32 @@ void native_linux_aio_provider::get_event()
         if (dsn_unlikely(!_is_running.load(std::memory_order_relaxed))) {
             break;
         }
+        // int io_getevents(aio_context_t ctx_id, long min_nr, long nr,
+        //                  struct io_event *events, struct timespec *timeout);
+        // - min_nr = 1
+        // - nr = 1
+        // - timeout = NULL
+        // Reads at least as well as up to 1 event from completion queue of AIO.
+        // Blocks indefinitely until 1 read event obtained.
         ret = io_getevents(_ctx, 1, 1, events, NULL);
         if (ret > 0) // should be 1
         {
             dassert(ret == 1, "io_getevents returns %d", ret);
-            struct iocb *io = events[0].obj;
-            complete_aio(io, static_cast<int>(events[0].res), static_cast<int>(events[0].res2));
+            complete_aio(reinterpret_cast<linux_disk_aio_context *>(events[0].data),
+                         events[0].res,
+                         static_cast<int>(events[0].res2));
         } else {
-            // on error it returns a negated error number (the negative of one of the values listed
-            // in ERRORS
-            dwarn("io_getevents returns %d, you probably want to try on another machine:-(", ret);
+            // If the returned number is less than 1, it means an OS interruption occurred.
+            // Check http://man7.org/linux/man-pages/man2/io_getevents.2.html#ERRORS.
+            dwarn("io_getevents returns %d", ret);
         }
     }
 }
 
-void native_linux_aio_provider::complete_aio(struct iocb *io, int bytes, int err)
+void native_linux_aio_provider::complete_aio(linux_disk_aio_context *linux_ctx,
+                                             int64_t bytes,
+                                             int err)
 {
-    linux_disk_aio_context *aio = CONTAINING_RECORD(io, linux_disk_aio_context, cb);
     error_code ec;
     if (err != 0) {
         derror("aio error, err = %s", strerror(err));
@@ -141,33 +145,33 @@ void native_linux_aio_provider::complete_aio(struct iocb *io, int bytes, int err
         ec = bytes > 0 ? ERR_OK : ERR_HANDLE_EOF;
     }
 
-    if (!aio->evt) {
-        aio_task *aio_ptr(aio->tsk);
-        aio->this_->complete_io(aio_ptr, ec, bytes);
+    if (!linux_ctx->evt) {
+        dassert(linux_ctx->async, "this AIO task must in async mode");
+        complete_io(linux_ctx->tsk, ec, bytes);
+        delete linux_ctx;
     } else {
-        aio->err = ec;
-        aio->bytes = bytes;
-        aio->evt->notify();
+        dassert(!linux_ctx->async, "this AIO task must in sync mode");
+        linux_ctx->err = ec;
+        linux_ctx->bytes = bytes;
+        linux_ctx->evt->notify();
     }
 }
 
 error_code native_linux_aio_provider::aio_internal(aio_task *aio_tsk,
-                                                   bool async,
-                                                   /*out*/ uint32_t *pbytes /*= nullptr*/)
+                                                   bool async /*= true*/,
+                                                   /*out*/ int64_t *pbytes /*= nullptr*/)
 {
-    struct iocb *cbs[1];
-    linux_disk_aio_context *aio;
+    struct iocb cb;
     int ret;
 
-    aio = (linux_disk_aio_context *)aio_tsk->get_aio_context();
-
-    memset(&aio->cb, 0, sizeof(aio->cb));
-
-    aio->this_ = this;
+    auto linux_ctx = dsn::make_unique<linux_disk_aio_context>();
+    linux_ctx->async = async;
+    linux_ctx->tsk = aio_tsk;
+    aio_context *aio = aio_tsk->get_aio_context();
 
     switch (aio->type) {
     case AIO_Read:
-        io_prep_pread(&aio->cb,
+        io_prep_pread(&cb,
                       static_cast<int>((ssize_t)aio->file),
                       aio->buffer,
                       aio->buffer_size,
@@ -175,7 +179,7 @@ error_code native_linux_aio_provider::aio_internal(aio_task *aio_tsk,
         break;
     case AIO_Write:
         if (aio->buffer) {
-            io_prep_pwrite(&aio->cb,
+            io_prep_pwrite(&cb,
                            static_cast<int>((ssize_t)aio->file),
                            aio->buffer,
                            aio->buffer_size,
@@ -189,7 +193,7 @@ error_code native_linux_aio_provider::aio_internal(aio_task *aio_tsk,
                 iov[i].iov_len = buf.size;
             }
             io_prep_pwritev(
-                &aio->cb, static_cast<int>((ssize_t)aio->file), iov, iovcnt, aio->file_offset);
+                &cb, static_cast<int>((ssize_t)aio->file), iov, iovcnt, aio->file_offset);
         }
         break;
     default:
@@ -197,38 +201,39 @@ error_code native_linux_aio_provider::aio_internal(aio_task *aio_tsk,
     }
 
     if (!async) {
-        aio->evt = new utils::notify_event();
-        aio->err = ERR_OK;
-        aio->bytes = 0;
+        // linux_ctx->evt is only created on non-asynchronous mode.
+        linux_ctx->evt = dsn::make_unique<utils::notify_event>();
+        linux_ctx->err = ERR_OK;
+        linux_ctx->bytes = 0;
     }
+    cb.data = linux_ctx.get();
 
-    cbs[0] = &aio->cb;
-    ret = io_submit(_ctx, 1, cbs);
-
+    // Submits 1 AIO task.
+    struct iocb *cbs = &cb;
+    ret = io_submit(_ctx, 1, &cbs);
     if (ret != 1) {
-        if (ret < 0)
-            derror("io_submit error, ret = %d", ret);
-        else
-            derror("could not sumbit IOs, ret = %d", ret);
-
+        // If the submitted iocb is less than 1
+        derror("io_submit error, ret = %d", ret);
         if (async) {
             complete_io(aio_tsk, ERR_FILE_OPERATION_FAILED, 0);
         } else {
-            delete aio->evt;
-            aio->evt = nullptr;
+            linux_ctx->evt.reset();
         }
         return ERR_FILE_OPERATION_FAILED;
     } else {
         if (async) {
+            // Because `linux_ctx` will be taken out from the aio-getevent thread,
+            // it will be deleted then.
+            linux_ctx.release();
+            // Success. Means this task is pending in the wait queue.
             return ERR_IO_PENDING;
         } else {
-            aio->evt->wait();
-            delete aio->evt;
-            aio->evt = nullptr;
+            linux_ctx->evt->wait();
+            linux_ctx->evt.reset();
             if (pbytes != nullptr) {
-                *pbytes = aio->bytes;
+                *pbytes = linux_ctx->bytes;
             }
-            return aio->err;
+            return linux_ctx->err;
         }
     }
 }

@@ -534,6 +534,7 @@ private:
 typedef dsn::ref_ptr<rpc_response_task> rpc_response_task_ptr;
 
 //------------------------- disk AIO task ---------------------------------------------------
+// TODO(wutao1): move AIO out of task.h in order to decouple aio module with core module.
 
 enum aio_type
 {
@@ -543,34 +544,25 @@ enum aio_type
 };
 
 class disk_engine;
-class aio_context : public ref_counter
+class disk_file;
+class aio_context
 {
 public:
     // filled by apps
-    dsn_handle_t file;
-    void *buffer;
-    bool support_write_vec; // if the aio provider supports write buffer vector
-    std::vector<dsn_file_buffer_t> *write_buffer_vec; // only used if support_write_vec is true
-    uint32_t buffer_size;
-    uint64_t file_offset;
+    dsn_handle_t file{nullptr};
+    void *buffer{nullptr};
+    bool support_write_vec{false}; // if the aio provider supports write buffer vector
+    std::vector<dsn_file_buffer_t> *write_buffer_vec{nullptr}; // only used if
+                                                               // support_write_vec is true
+    uint32_t buffer_size{0};
+    uint64_t file_offset{0};
+    void *caller{nullptr}; // caller of this AIO task, used for gdb debugging
 
     // filled by frameworks
-    aio_type type;
-    disk_engine *engine;
-    void *file_object; // TODO(wutao1): make it disk_file*, and distinguish it from `file`
-
-    aio_context()
-        : file(nullptr),
-          buffer(nullptr),
-          support_write_vec(false),
-          write_buffer_vec(nullptr),
-          buffer_size(0),
-          file_offset(0),
-          type(AIO_Invalid),
-          engine(nullptr),
-          file_object(nullptr)
-    {
-    }
+    aio_type type{AIO_Invalid};
+    disk_engine *engine{nullptr};
+    disk_file *file_object{nullptr};
+    std::string file_name; // used for gdb debugging
 };
 
 class aio_task : public task
@@ -587,7 +579,7 @@ public:
     size_t get_transferred_size() const { return _transferred_size; }
 
     // The ownership of `aio_context` is held by `aio_task`.
-    aio_context *get_aio_context() { return _aio_ctx.get(); }
+    aio_context *get_aio_context() { return &_aio_ctx; }
 
     // merge buffers in _unmerged_write_buffers to a single merged buffer.
     // and store it in _merged_write_buffer_holder.
@@ -608,7 +600,7 @@ protected:
     void clear_non_trivial_on_task_end() override { _cb = nullptr; }
 
 private:
-    dsn::ref_ptr<aio_context> _aio_ctx;
+    aio_context _aio_ctx;
     size_t _transferred_size;
     aio_handler _cb;
 };

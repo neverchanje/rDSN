@@ -1707,12 +1707,14 @@ std::map<int, log_file_ptr> mutation_log::get_log_file_map() const
     return _log_files;
 }
 
-// log_file::file_streamer
+/// TODO(wutao1): Move this class into another single file
+/// Reads file sequentially.
+/// Not thread-safe
 class log_file::file_streamer
 {
 public:
-    explicit file_streamer(disk_file *fd, size_t file_offset)
-        : _file_dispatched_bytes(file_offset), _file_handle(fd)
+    explicit file_streamer(log_file *logf, size_t file_offset)
+        : _file_dispatched_bytes(file_offset), _file_handle(logf->file_handle()), _logf(logf)
     {
         _current_buffer = _buffers + 0;
         _next_buffer = _buffers + 1;
@@ -1761,7 +1763,7 @@ public:
     } while (0)
 
         TRY(_current_buffer->wait_ongoing_task());
-        if (size < _current_buffer->length()) {
+        if (size < _current_buffer->length()) { // buffer has enough data to read.
             result.assign(_current_buffer->_buffer.get(), _current_buffer->_begin, size);
             _current_buffer->_begin += size;
         } else {
@@ -1779,9 +1781,10 @@ public:
                                    writer.get_current_buffer().buffer().get() + writer.total_size(),
                                    size - writer.total_size(),
                                    _file_dispatched_bytes,
-                                   LPC_AIO_IMMEDIATE_CALLBACK,
+                                   LPC_AIO_LOG_READ_NEXT,
                                    nullptr,
-                                   nullptr);
+                                   nullptr,
+                                   _logf);
                     task->wait();
                     writer.write_empty(task->get_transferred_size());
                     _file_dispatched_bytes += task->get_transferred_size();
@@ -1806,9 +1809,10 @@ private:
                                                 _current_buffer->_buffer.get(),
                                                 block_size_bytes,
                                                 _file_dispatched_bytes,
-                                                LPC_AIO_IMMEDIATE_CALLBACK,
+                                                LPC_AIO_LOG_FILL_BUFFERS,
                                                 nullptr,
-                                                nullptr);
+                                                nullptr,
+                                                _logf);
             _file_dispatched_bytes += block_size_bytes;
             std::swap(_current_buffer, _next_buffer);
         }
@@ -1864,9 +1868,12 @@ private:
     // number of bytes we have issued read operations
     size_t _file_dispatched_bytes;
     disk_file *_file_handle;
+    log_file *_logf; // for gdb debugging
 };
 
 //------------------- log_file --------------------------
+// TODO(wutao1): move class log_file to another separate file.
+
 log_file::~log_file() { close(); }
 /*static */ log_file_ptr log_file::open_read(const char *path, /*out*/ error_code &err)
 {
@@ -2031,7 +2038,6 @@ error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
     auto err = _stream->read_next(sizeof(log_block_header), bb);
     if (err != ERR_OK || bb.length() != sizeof(log_block_header)) {
         if (err == ERR_OK || err == ERR_HANDLE_EOF) {
-            // if read_count is 0, then we meet the end of file
             err = (bb.length() == 0 ? ERR_HANDLE_EOF : ERR_INCOMPLETE_DATA);
         } else {
             derror("read data block header failed, size = %d vs %d, err = %s",
@@ -2039,11 +2045,9 @@ error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
                    (int)sizeof(log_block_header),
                    err.to_string());
         }
-
         return err;
     }
     log_block_header hdr = *reinterpret_cast<const log_block_header *>(bb.data());
-
     if (hdr.magic != 0xdeadbeef) {
         derror("invalid data header magic: 0x%x", hdr.magic);
         return ERR_INVALID_DATA;
@@ -2157,7 +2161,7 @@ aio_task_ptr log_file::commit_log_block(log_block &block,
 void log_file::reset_stream(size_t offset /*default = 0*/)
 {
     if (_stream == nullptr) {
-        _stream.reset(new file_streamer(_handle, offset));
+        _stream.reset(new file_streamer(this, offset));
     } else {
         _stream->reset(offset);
     }

@@ -41,18 +41,13 @@ namespace dsn {
 class rpc_read_stream : public binary_reader
 {
 public:
-    rpc_read_stream(message_ex *msg) { set_read_msg(msg); }
-
-    rpc_read_stream() : _msg(nullptr) {}
-
-    void set_read_msg(message_ex *msg)
+    rpc_read_stream(message_ex *msg)
     {
         _msg = msg;
 
         ::dsn::blob bb;
-        bool r = ((::dsn::message_ex *)_msg)->read_next(bb);
+        bool r = _msg->read_next(bb);
         dassert(r, "read msg must have one segment of buffer ready");
-
         init(std::move(bb));
     }
 

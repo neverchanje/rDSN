@@ -50,7 +50,7 @@ sim_aio_provider::~sim_aio_provider(void) {}
 void sim_aio_provider::aio(aio_task *aio)
 {
     error_code err;
-    uint32_t bytes;
+    int64_t bytes;
 
     err = aio_internal(aio, false, &bytes);
     complete_io(aio, err, bytes, 0);

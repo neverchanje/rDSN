@@ -74,7 +74,10 @@ aio_task *disk_write_queue::unlink_next_workload(void *plength)
     return first;
 }
 
-disk_file::disk_file(dsn_handle_t handle) : _handle(handle) {}
+disk_file::disk_file(dsn_handle_t handle, const char *file_name)
+    : _handle(handle), _file_name(file_name)
+{
+}
 
 aio_task *disk_file::read(aio_task *tsk)
 {
@@ -155,16 +158,15 @@ disk_file *disk_engine::open(const char *file_name, int flag, int pmode)
 {
     dsn_handle_t nh = _provider->open(file_name, flag, pmode);
     if (nh != DSN_INVALID_FILE_HANDLE) {
-        return new disk_file(nh);
+        return new disk_file(nh, file_name);
     } else {
         return nullptr;
     }
 }
 
-error_code disk_engine::close(disk_file *fh)
+error_code disk_engine::close(disk_file *df)
 {
-    if (nullptr != fh) {
-        auto df = (disk_file *)fh;
+    if (nullptr != df) {
         auto ret = _provider->close(df->native_handle());
         delete df;
         return ret;
@@ -173,10 +175,9 @@ error_code disk_engine::close(disk_file *fh)
     }
 }
 
-error_code disk_engine::flush(disk_file *fh)
+error_code disk_engine::flush(disk_file *df)
 {
-    if (nullptr != fh) {
-        auto df = (disk_file *)fh;
+    if (nullptr != df) {
         return _provider->flush(df->native_handle());
     } else {
         return ERR_INVALID_HANDLE;
@@ -195,13 +196,7 @@ void disk_engine::read(aio_task *aio)
         return;
     }
 
-    auto dio = aio->get_aio_context();
-    auto df = (disk_file *)dio->file;
-    dio->file = df->native_handle();
-    dio->file_object = df;
-    dio->engine = this;
-    dio->type = AIO_Read;
-
+    disk_file *df = aio->get_aio_context()->file_object;
     auto wk = df->read(aio);
     if (wk) {
         return _provider->aio(wk);
@@ -218,9 +213,8 @@ public:
 
     virtual void exec() override
     {
-        auto df = (disk_file *)_tasks->get_aio_context()->file_object;
+        disk_file *df = _tasks->get_aio_context()->file_object;
         uint32_t sz;
-
         auto wk = df->on_write_completed(_tasks, (void *)&sz, error(), get_transferred_size());
         if (wk) {
             wk->get_aio_context()->engine->process_write(wk, sz);
@@ -243,13 +237,7 @@ void disk_engine::write(aio_task *aio)
         return;
     }
 
-    auto dio = aio->get_aio_context();
-    auto df = (disk_file *)dio->file;
-    dio->file = df->native_handle();
-    dio->file_object = df;
-    dio->engine = this;
-    dio->type = AIO_Write;
-
+    disk_file *df = aio->get_aio_context()->file_object;
     uint32_t sz;
     auto wk = df->write(aio, &sz);
     if (wk) {
@@ -307,7 +295,7 @@ void disk_engine::process_write(aio_task *aio, uint32_t sz)
     }
 }
 
-void disk_engine::complete_io(aio_task *aio, error_code err, uint32_t bytes, int delay_milliseconds)
+void disk_engine::complete_io(aio_task *aio, error_code err, int64_t bytes, int delay_milliseconds)
 {
     if (err != ERR_OK) {
         dinfo("disk operation failure with code %s, err = %s, aio_task_id = %016" PRIx64,
@@ -324,7 +312,7 @@ void disk_engine::complete_io(aio_task *aio, error_code err, uint32_t bytes, int
 
     // no batching
     else {
-        auto df = (disk_file *)(aio->get_aio_context()->file_object);
+        disk_file *df = aio->get_aio_context()->file_object;
         if (aio->get_aio_context()->type == AIO_Read) {
             auto wk = df->on_read_completed(aio, err, (size_t)bytes);
             if (wk) {

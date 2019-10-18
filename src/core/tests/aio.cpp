@@ -180,22 +180,22 @@ TEST(core, operation_failed)
     t->wait();
     EXPECT_TRUE(*err == ERR_OK && *count == strlen(str));
 
-    t = ::dsn::file::read(fp, buffer, 512, 0, LPC_AIO_TEST, nullptr, io_callback, 0);
+    t = ::dsn::file::read(fp, buffer, 512, 0, LPC_AIO_TEST, nullptr, io_callback);
     t->wait();
     EXPECT_TRUE(*err == ERR_FILE_OPERATION_FAILED);
 
     auto fp2 = file::open("tmp_test_file", O_RDONLY | O_BINARY, 0);
     EXPECT_TRUE(fp2 != nullptr);
 
-    t = ::dsn::file::read(fp2, buffer, 512, 0, LPC_AIO_TEST, nullptr, io_callback, 0);
+    t = ::dsn::file::read(fp2, buffer, 512, 0, LPC_AIO_TEST, nullptr, io_callback);
     t->wait();
     EXPECT_TRUE(*err == ERR_OK && *count == strlen(str));
 
-    t = ::dsn::file::read(fp2, buffer, 5, 0, LPC_AIO_TEST, nullptr, io_callback, 0);
+    t = ::dsn::file::read(fp2, buffer, 5, 0, LPC_AIO_TEST, nullptr, io_callback);
     t->wait();
     EXPECT_TRUE(*err == ERR_OK && *count == 5);
 
-    t = ::dsn::file::read(fp2, buffer, 512, 100, LPC_AIO_TEST, nullptr, io_callback, 0);
+    t = ::dsn::file::read(fp2, buffer, 512, 100, LPC_AIO_TEST, nullptr, io_callback);
     t->wait();
     ddebug("error code: %s", err->to_string());
     file::close(fp);

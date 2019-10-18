@@ -67,6 +67,7 @@ extern aio_task_ptr read(disk_file *file,
                          task_code callback_code,
                          task_tracker *tracker,
                          aio_handler &&callback,
+                         void *caller = nullptr,
                          int hash = 0);
 
 extern aio_task_ptr write(disk_file *file,

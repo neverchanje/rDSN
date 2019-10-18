@@ -52,7 +52,7 @@ private:
 class disk_file
 {
 public:
-    disk_file(dsn_handle_t handle);
+    disk_file(dsn_handle_t handle, const char *file_name);
     aio_task *read(aio_task *tsk);
     aio_task *write(aio_task *tsk, void *ctx);
 
@@ -61,11 +61,13 @@ public:
 
     // TODO(wutao1): make it uint64_t
     dsn_handle_t native_handle() const { return _handle; }
+    const std::string &file_name() const { return _file_name; }
 
 private:
     dsn_handle_t _handle;
     disk_write_queue _write_queue;
     work_queue<aio_task> _read_queue;
+    std::string _file_name; // for gdb debugging
 };
 
 class disk_engine
@@ -83,15 +85,13 @@ public:
     void read(aio_task *aio);
     void write(aio_task *aio);
 
-    aio_context *prepare_aio_context(aio_task *tsk) { return _provider->prepare_aio_context(tsk); }
-
     service_node *node() const { return _node; }
 
 private:
     friend class aio_provider;
     friend class batch_write_io_task;
     void process_write(aio_task *wk, uint32_t sz);
-    void complete_io(aio_task *aio, error_code err, uint32_t bytes, int delay_milliseconds = 0);
+    void complete_io(aio_task *aio, error_code err, int64_t bytes, int delay_milliseconds = 0);
 
 private:
     volatile bool _is_running;

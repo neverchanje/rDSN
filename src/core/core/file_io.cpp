@@ -47,14 +47,19 @@ namespace file {
                              task_code callback_code,
                              task_tracker *tracker,
                              aio_handler &&callback,
+                             void *caller /*= nullptr*/,
                              int hash /*= 0*/)
 {
     auto cb = create_aio_task(callback_code, tracker, std::move(callback), hash);
     cb->get_aio_context()->buffer = buffer;
     cb->get_aio_context()->buffer_size = count;
-    cb->get_aio_context()->file = file;
+    cb->get_aio_context()->file = file->native_handle();
+    cb->get_aio_context()->file_object = file;
     cb->get_aio_context()->file_offset = offset;
     cb->get_aio_context()->type = AIO_Read;
+    cb->get_aio_context()->engine = task::get_current_disk();
+    cb->get_aio_context()->caller = caller;
+    cb->get_aio_context()->file_name = file->file_name();
 
     task::get_current_disk()->read(cb);
     return cb;
@@ -72,9 +77,11 @@ namespace file {
     auto cb = create_aio_task(callback_code, tracker, std::move(callback), hash);
     cb->get_aio_context()->buffer = (char *)buffer;
     cb->get_aio_context()->buffer_size = count;
-    cb->get_aio_context()->file = file;
+    cb->get_aio_context()->file = file->native_handle();
+    cb->get_aio_context()->file_object = file;
     cb->get_aio_context()->file_offset = offset;
     cb->get_aio_context()->type = AIO_Write;
+    cb->get_aio_context()->engine = task::get_current_disk();
 
     task::get_current_disk()->write(cb);
     return cb;
@@ -90,9 +97,11 @@ namespace file {
                                      int hash /*= 0*/)
 {
     auto cb = create_aio_task(callback_code, tracker, std::move(callback), hash);
-    cb->get_aio_context()->file = file;
+    cb->get_aio_context()->file = file->native_handle();
+    cb->get_aio_context()->file_object = file;
     cb->get_aio_context()->file_offset = offset;
     cb->get_aio_context()->type = AIO_Write;
+    cb->get_aio_context()->engine = task::get_current_disk();
     for (int i = 0; i < buffer_count; i++) {
         if (buffers[i].size > 0) {
             cb->_unmerged_write_buffers.push_back(buffers[i]);

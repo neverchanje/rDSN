@@ -51,9 +51,6 @@ namespace replication {
         return error_s::make(ERR_INCOMPLETE_DATA, "mutation_log_replay_block");
     });
 
-    blob bb;
-    std::unique_ptr<binary_reader> reader;
-
     log->reset_stream(start_offset); // start reading from given offset
     int64_t global_start_offset = start_offset + log->start_offset();
     end_offset = global_start_offset; // reset end_offset to the start.
@@ -64,24 +61,23 @@ namespace replication {
         return error_s::make(err, "failed to read log block");
     }
 
-    reader = dsn::make_unique<binary_reader>(bb);
+    binary_reader reader(bb);
     end_offset += sizeof(log_block_header);
 
     // The first block is log_file_header.
     if (global_start_offset == log->start_offset()) {
-        end_offset += log->read_file_header(*reader);
+        end_offset += log->read_file_header(reader);
         if (!log->is_right_header()) {
             return error_s::make(ERR_INVALID_DATA, "failed to read log file header");
         }
         // continue to parsing the data block
     }
 
-    while (!reader->is_eof()) {
-        auto old_size = reader->get_remaining_size();
-        mutation_ptr mu = mutation::read_from(*reader, nullptr);
+    while (!reader.is_eof()) {
+        auto old_size = reader.get_remaining_size();
+        mutation_ptr mu = mutation::read_from(reader, nullptr);
         dassert(nullptr != mu, "");
         mu->set_logged();
-
         if (mu->data.header.log_offset != end_offset) {
             return FMT_ERR(ERR_INVALID_DATA,
                            "offset mismatch in log entry and mutation {} vs {}",
@@ -89,10 +85,8 @@ namespace replication {
                            mu->data.header.log_offset);
         }
 
-        int log_length = old_size - reader->get_remaining_size();
-
+        int log_length = old_size - reader.get_remaining_size();
         callback(log_length, mu);
-
         end_offset += log_length;
     }
 
@@ -132,7 +126,6 @@ namespace replication {
     int64_t g_start_offset = 0;
     int64_t g_end_offset = 0;
     error_code err = ERR_OK;
-    log_file_ptr last;
 
     if (logs.size() > 0) {
         g_start_offset = logs.begin()->second->start_offset();
@@ -157,7 +150,6 @@ namespace replication {
             return ERR_INVALID_DATA;
         }
 
-        last = log;
         err = mutation_log::replay(log, callback, end_offset);
 
         log->close();
