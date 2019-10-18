@@ -1928,7 +1928,7 @@ log_file::~log_file() { close(); }
 
     auto lf = new log_file(path, hfile, index, start_offset, true);
     lf->reset_stream();
-    blob hdr_blob;
+    std::vector<blob> hdr_blob;
     err = lf->read_next_log_block(hdr_blob);
     if (err == ERR_INVALID_DATA || err == ERR_INCOMPLETE_DATA || err == ERR_HANDLE_EOF ||
         err == ERR_FILE_OPERATION_FAILED) {
@@ -2032,9 +2032,13 @@ void log_file::flush() const
     }
 }
 
-error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
+error_code log_file::read_next_log_block(/*out*/ std::vector<blob> &fragments)
 {
     dassert(_is_read, "log file must be of read mode");
+
+    // reads block header
+    fragments.resize(1);
+    blob &bb = fragments[0];
     auto err = _stream->read_next(sizeof(log_block_header), bb);
     if (err != ERR_OK || bb.length() != sizeof(log_block_header)) {
         if (err == ERR_OK || err == ERR_HANDLE_EOF) {

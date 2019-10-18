@@ -56,12 +56,13 @@ namespace replication {
     end_offset = global_start_offset; // reset end_offset to the start.
 
     // reads the entire block into memory
-    error_code err = log->read_next_log_block(bb);
+    std::vector<blob> fragments;
+    error_code err = log->read_next_log_block(fragments);
     if (err != ERR_OK) {
         return error_s::make(err, "failed to read log block");
     }
 
-    binary_reader reader(bb);
+    binary_reader reader(fragments);
     end_offset += sizeof(log_block_header);
 
     // The first block is log_file_header.

@@ -637,7 +637,7 @@ public:
     //  - ERR_INCOMPLETE_DATA
     //  - ERR_INVALID_DATA
     //  - other io errors caused by file read operator
-    error_code read_next_log_block(/*out*/ ::dsn::blob &bb);
+    error_code read_next_log_block(/*out*/ std::vector<blob> &fragments);
 
     //
     // write routines

@@ -232,7 +232,7 @@ TEST(replication, log_file)
     // read data
     lf->reset_stream();
     for (int i = 0; i < 100; i++) {
-        blob bb;
+        std::vector<blob> bb;
         auto err = lf->read_next_log_block(bb);
         ASSERT_EQ(ERR_OK, err);
 
@@ -248,12 +248,12 @@ TEST(replication, log_file)
         reader.read(ss);
         ASSERT_TRUE(ss == str);
 
-        offset += bb.length() + sizeof(log_block_header);
+        offset += reader.total_size() + sizeof(log_block_header);
     }
 
     ASSERT_TRUE(offset == lf->end_offset());
 
-    blob bb;
+    std::vector<blob> bb;
     err = lf->read_next_log_block(bb);
     ASSERT_TRUE(err == ERR_HANDLE_EOF);
 
