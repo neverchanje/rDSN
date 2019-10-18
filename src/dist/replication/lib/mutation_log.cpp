@@ -2057,25 +2057,33 @@ error_code log_file::read_next_log_block(/*out*/ std::vector<blob> &fragments)
         return ERR_INVALID_DATA;
     }
 
-    err = _stream->read_next(hdr.length, bb);
-    if (err != ERR_OK || hdr.length != bb.length()) {
-        derror("read data block body failed, size = %d vs %d, err = %s",
-               bb.length(),
-               (int)hdr.length,
-               err.to_string());
+    static const size_t WAL_FRAG_SIZE = dsn_config_get_value_uint64(
+        "replication", "mutation_log_block_fragment_size", 64 * 1024 * 1024, ""); // 64MB
 
-        if (err == ERR_OK || err == ERR_HANDLE_EOF) {
-            // because already read log_block_header above, so here must be imcomplete data
-            err = ERR_INCOMPLETE_DATA;
+    fragments.resize(hdr.length / WAL_FRAG_SIZE + 1);
+    auto remained_len = hdr.length;
+    int i = 0;
+    uint32_t crc = _crc32;
+    while (remained_len > 0) {
+        bb = fragments[i];
+        auto len = remained_len > WAL_FRAG_SIZE ? WAL_FRAG_SIZE : remained_len;
+        err = _stream->read_next(len, bb);
+        if (err != ERR_OK || len != bb.length()) {
+            derror_f(
+                "read data block body failed, size = {} vs {}, err = {}", bb.length(), len, err);
+            if (err == ERR_OK || err == ERR_HANDLE_EOF) {
+                // because already read log_block_header above, so here must be imcomplete data
+                err = ERR_INCOMPLETE_DATA;
+            }
+            return err;
         }
-
-        return err;
+        crc = utils::crc32_calc(bb.data(), len, crc);
+        remained_len -= len;
+        i++;
     }
 
-    auto crc = dsn::utils::crc32_calc(
-        static_cast<const void *>(bb.data()), static_cast<size_t>(hdr.length), _crc32);
     if (crc != hdr.body_crc) {
-        derror("crc checking failed");
+        derror_f("crc checking failed {} vs {}", _crc32, hdr.body_crc);
         return ERR_INVALID_DATA;
     }
     _crc32 = crc;
