@@ -2060,24 +2060,28 @@ error_code log_file::read_next_log_block(/*out*/ std::vector<blob> &fragments)
     static const size_t WAL_FRAG_SIZE = dsn_config_get_value_uint64(
         "replication", "mutation_log_block_fragment_size", 64 * 1024 * 1024, ""); // 64MB
 
-    fragments.resize(hdr.length / WAL_FRAG_SIZE + 1);
+    if (hdr.length % WAL_FRAG_SIZE != 0) {
+        fragments.resize(hdr.length / WAL_FRAG_SIZE + 1);
+    } else {
+        fragments.resize(hdr.length / WAL_FRAG_SIZE);
+    }
     auto remained_len = hdr.length;
     int i = 0;
     uint32_t crc = _crc32;
     while (remained_len > 0) {
-        bb = fragments[i];
+        blob& frag = fragments[i];
         auto len = remained_len > WAL_FRAG_SIZE ? WAL_FRAG_SIZE : remained_len;
-        err = _stream->read_next(len, bb);
-        if (err != ERR_OK || len != bb.length()) {
+        err = _stream->read_next(len, frag);
+        if (err != ERR_OK || len != frag.length()) {
             derror_f(
-                "read data block body failed, size = {} vs {}, err = {}", bb.length(), len, err);
+                "read data block body failed, size = {} vs {}, err = {}", frag.length(), len, err);
             if (err == ERR_OK || err == ERR_HANDLE_EOF) {
                 // because already read log_block_header above, so here must be imcomplete data
                 err = ERR_INCOMPLETE_DATA;
             }
             return err;
         }
-        crc = utils::crc32_calc(bb.data(), len, crc);
+        crc = utils::crc32_calc(frag.data(), len, crc);
         remained_len -= len;
         i++;
     }

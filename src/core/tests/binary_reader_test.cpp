@@ -11,14 +11,20 @@
 
 namespace dsn {
 
-TEST(binary_reader_test, pod_types)
-{
-
 #define POD_TYPES                                                                                  \
     int, bool, bool, uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t
+using t_variant = boost::variant<POD_TYPES>;
+ 
+template<typename T>
+void test_reader(binary_reader &reader, t_variant& var) {
+    T val;
+    EXPECT_EQ(reader.read(val), sizeof(T));
+    EXPECT_EQ(val, boost::get<T>(var));
+}
 
-    using t_variant = boost::variant<POD_TYPES>;
-    t_variant test_cases[] = {
+TEST(binary_reader_test, pod_types)
+{
+   t_variant test_cases[] = {
         int(0xdeadbeef),
         false,
         true,
@@ -32,24 +38,31 @@ TEST(binary_reader_test, pod_types)
         std::numeric_limits<int64_t>::max(),
     };
 
-    using types_mpl_vec = boost::mpl::vector<POD_TYPES>;
     binary_writer writer;
-    int i = 0;
-    boost::mpl::for_each<types_mpl_vec>([&](auto arg) {
-        using type = decltype(arg);
-        writer.write(boost::get<type>(test_cases[i]));
-        i++;
-    });
+    writer.write(boost::get<int>(test_cases[0]));
+    writer.write(boost::get<bool>(test_cases[1]));
+    writer.write(boost::get<bool>(test_cases[2]));
+    writer.write(boost::get<uint8_t>(test_cases[3]));
+    writer.write(boost::get<uint16_t>(test_cases[4]));
+    writer.write(boost::get<uint32_t>(test_cases[5]));
+    writer.write(boost::get<uint64_t>(test_cases[6]));
+    writer.write(boost::get<int8_t>(test_cases[7]));
+    writer.write(boost::get<int16_t>(test_cases[8]));
+    writer.write(boost::get<int32_t>(test_cases[9]));
+    writer.write(boost::get<int64_t>(test_cases[10]));
 
-    i = 0;
     binary_reader reader(writer.get_buffer());
-    boost::mpl::for_each<types_mpl_vec>([&](auto arg) {
-        using type = decltype(arg);
-        type val;
-        EXPECT_EQ(reader.read(val), sizeof(type));
-        EXPECT_EQ(val, boost::get<type>(test_cases[i]));
-        i++;
-    });
+    test_reader<int>(reader, test_cases[0]);
+    test_reader<bool>(reader, test_cases[1]);
+    test_reader<bool>(reader, test_cases[2]);
+    test_reader<uint8_t>(reader, test_cases[3]);
+    test_reader<uint16_t>(reader, test_cases[4]);
+    test_reader<uint32_t>(reader, test_cases[5]);
+    test_reader<uint64_t>(reader, test_cases[6]);
+    test_reader<int8_t>(reader, test_cases[7]);
+    test_reader<int16_t>(reader, test_cases[8]);
+    test_reader<int32_t>(reader, test_cases[9]);
+    test_reader<int64_t>(reader, test_cases[10]);
 }
 
 TEST(binary_reader_test, two_fragments)
