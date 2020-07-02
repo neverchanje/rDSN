@@ -133,11 +133,6 @@ void mutation_log_shared::commit_pending_mutations(log_file_ptr &lf,
         [this, lf, pending](error_code err, size_t sz) mutable {
             dassert(_is_writing.load(std::memory_order_relaxed), "");
 
-            for (auto &block : pending->all_blocks()) {
-                auto hdr = (log_block_header *)block.front().data();
-                dassert(hdr->magic == 0xdeadbeef, "header magic is changed: 0x%x", hdr->magic);
-            }
-
             if (err == ERR_OK) {
                 dcheck_eq(sz, pending->size());
 
@@ -392,11 +387,6 @@ void mutation_log_private::commit_pending_mutations(log_file_ptr &lf,
         &_tracker,
         [this, lf, pending, max_commit](error_code err, size_t sz) mutable {
             dassert(_is_writing.load(std::memory_order_relaxed), "");
-
-            for (auto &block : pending->all_blocks()) {
-                auto hdr = (log_block_header *)block.front().data();
-                dassert(hdr->magic == 0xdeadbeef, "header magic is changed: 0x%x", hdr->magic);
-            }
 
             if (err != ERR_OK) {
                 derror("write private log failed, err = %s", err.to_string());

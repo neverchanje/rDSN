@@ -135,7 +135,7 @@ log_file::~log_file() { close(); }
         return nullptr;
     }
 
-    disk_file *hfile = file::open(path, O_RDWR | O_CREAT | O_BINARY, 0666);
+    disk_file *hfile = file::open(path, O_RDWR | O_CREAT | O_BINARY | O_DIRECT, 0666);
     if (!hfile) {
         dwarn("create log %s failed", path);
         return nullptr;
@@ -194,6 +194,15 @@ void log_file::flush() const
 
 error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
 {
+    bool is_padding_blk = false;
+    error_code ec = read_next_log_block(bb, is_padding_blk);
+    // should use `read_next_log_block(bb, is_padding_blk)` to read a possible padding block
+    dassert(!is_padding_blk, "must not be a padding block");
+    return ec;
+}
+
+error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb, /*out*/ bool &is_padding_blk)
+{
     dassert(_is_read, "log file must be of read mode");
     auto err = _stream->read_next(sizeof(log_block_header), bb);
     if (err != ERR_OK || bb.length() != sizeof(log_block_header)) {
@@ -211,9 +220,12 @@ error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
     }
     log_block_header hdr = *reinterpret_cast<const log_block_header *>(bb.data());
 
-    if (hdr.magic != 0xdeadbeef) {
+    if (hdr.magic != 0xdeadbeef && hdr.magic != MAGIC_PADDING_BLOCK) {
         derror("invalid data header magic: 0x%x", hdr.magic);
         return ERR_INVALID_DATA;
+    }
+    if (hdr.magic == MAGIC_PADDING_BLOCK) {
+        is_padding_blk = true;
     }
 
     err = _stream->read_next(hdr.length, bb);
@@ -224,7 +236,7 @@ error_code log_file::read_next_log_block(/*out*/ ::dsn::blob &bb)
                err.to_string());
 
         if (err == ERR_OK || err == ERR_HANDLE_EOF) {
-            // because already read log_block_header above, so here must be imcomplete data
+            // because already read log_block_header above, so here must be incomplete data
             err = ERR_INCOMPLETE_DATA;
         }
 
@@ -266,6 +278,8 @@ aio_task_ptr log_file::commit_log_blocks(log_appender &pending,
         return nullptr;
     }
 
+    pending.finish();
+
     auto size = (long long)pending.size();
     size_t vec_size = pending.blob_count();
     std::vector<dsn_file_buffer_t> buffer_vector(vec_size);
@@ -274,7 +288,7 @@ aio_task_ptr log_file::commit_log_blocks(log_appender &pending,
         int64_t local_offset = block.start_offset() - start_offset();
         auto hdr = reinterpret_cast<log_block_header *>(const_cast<char *>(block.front().data()));
 
-        dassert(hdr->magic == 0xdeadbeef, "");
+        dassert(hdr->magic == 0xdeadbeef || hdr->magic == MAGIC_PADDING_BLOCK, "");
         hdr->local_offset = local_offset;
         hdr->length = static_cast<int32_t>(block.size() - sizeof(log_block_header));
         hdr->body_crc = _crc32;

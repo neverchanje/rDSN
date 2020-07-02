@@ -153,5 +153,25 @@ TEST_F(log_appender_test, read_log_block)
     ASSERT_EQ(mutation_idx, 1024);
 }
 
+TEST_F(log_appender_test, finish)
+{
+    log_appender appender(10);
+    for (int i = 0; i < 1024; i++) { // more than DEFAULT_MAX_BLOCK_BYTES
+        appender.append_mutation(create_test_mutation(1 + i, std::string(1024, 'a')), nullptr);
+    }
+    ASSERT_NE(appender.size() % get_sys_page_size(), 0);
+    appender.finish();
+    ASSERT_EQ(appender.size() % get_sys_page_size(), 0);
+
+    for (int i = 0; i < 100; i++) {
+        // keep unmodified after many times of finish
+        int blob_cnt_1 = appender.blob_count();
+        size_t size_1 = appender.size();
+        appender.finish();
+        ASSERT_EQ(appender.size(), size_1);
+        ASSERT_EQ(appender.blob_count(), blob_cnt_1);
+    }
+}
+
 } // namespace replication
 } // namespace dsn

@@ -120,6 +120,7 @@ public:
     //  - ERR_INVALID_DATA
     //  - other io errors caused by file read operator
     error_code read_next_log_block(/*out*/ ::dsn::blob &bb);
+    error_code read_next_log_block(/*out*/ ::dsn::blob &bb, /*out*/ bool &is_padding_blk);
 
     //
     // write routines

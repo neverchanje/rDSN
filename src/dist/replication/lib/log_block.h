@@ -21,6 +21,8 @@ struct log_block_header
     uint32_t local_offset{0};
 };
 
+static constexpr int MAGIC_PADDING_BLOCK = 0x00010001;
+
 // a memory structure holding data which belongs to one block.
 class log_block
 {
@@ -38,17 +40,14 @@ public:
 
     // get the first blob (which contains the log_block_header) from the block
     //
-    // TODO(wutao1): refactor `front()` to `get_log_block_header()`
+    // TODO(wutao1): replace `front` with `get_log_block_header`.
     // ```
-    //   log_block_header *get_log_block_header()
-    //   {
-    //       return reinterpret_cast<log_block_header *>(const_cast<char *>(_data.front().data()));
-    //   }
-    // ```
-    blob &front()
+    blob &front() { return _data.front(); }
+
+    log_block_header *get_log_block_header()
     {
         dassert(!_data.empty(), "trying to get first blob out of an empty log block");
-        return _data.front();
+        return reinterpret_cast<log_block_header *>(const_cast<char *>(_data.front().data()));
     }
 
     // add a blob into the block
@@ -85,6 +84,8 @@ public:
 
     void append_mutation(const mutation_ptr &mu, const aio_task_ptr &cb);
 
+    void finish();
+
     size_t size() const { return _full_blocks_size + _blocks.crbegin()->size(); }
     size_t blob_count() const { return _full_blocks_blob_cnt + _blocks.crbegin()->data().size(); }
 
@@ -97,6 +98,9 @@ public:
     int64_t start_offset() const { return _blocks.cbegin()->start_offset(); }
 
     std::vector<log_block> &all_blocks() { return _blocks; }
+
+private:
+    log_block *append_empty_block();
 
 protected:
     static constexpr size_t DEFAULT_MAX_BLOCK_BYTES = 1 * 1024 * 1024; // 1MB
@@ -112,6 +116,8 @@ protected:
     std::vector<aio_task_ptr> _callbacks;
     std::vector<mutation_ptr> _mutations;
 };
+
+extern size_t get_sys_page_size();
 
 } // namespace replication
 } // namespace dsn
