@@ -110,6 +110,7 @@ void mutation_log_shared::write_pending_mutations(bool release_lock_required)
     dassert(!_is_writing.load(std::memory_order_relaxed), "");
     dassert(_pending_write != nullptr, "");
     dassert(_pending_write->size() > 0, "pending write size = %d", (int)_pending_write->size());
+    _pending_write->finish();
     auto pr = mark_new_offset(_pending_write->size(), false);
     dcheck_eq(pr.second, _pending_write->start_offset());
 
@@ -356,6 +357,7 @@ void mutation_log_private::write_pending_mutations(bool release_lock_required)
     dassert(!_is_writing.load(std::memory_order_relaxed), "");
     dassert(_pending_write != nullptr, "");
     dassert(_pending_write->size() > 0, "pending write size = %d", (int)_pending_write->size());
+    _pending_write->finish();
     auto pr = mark_new_offset(_pending_write->size(), false);
     dcheck_eq_replica(pr.second, _pending_write->start_offset());
 
@@ -724,20 +726,19 @@ error_code mutation_log::create_new_log_file()
 
     // create new pending buffer because we need write file header
     // write file header into pending buffer
-    size_t header_len = 0;
     binary_writer temp_writer;
     if (_is_private) {
         replica_log_info_map ds;
         ds[_private_gpid] =
             replica_log_info(_private_log_info.max_decree, _private_log_info.valid_start_offset);
-        header_len = logf->write_file_header(temp_writer, ds);
+        logf->write_file_header(temp_writer, ds);
     } else {
-        header_len = logf->write_file_header(temp_writer, _shared_log_info_map);
+        logf->write_file_header(temp_writer, _shared_log_info_map);
     }
 
     log_block *blk = new log_block();
     blk->add(temp_writer.get_buffer());
-    _global_end_offset += blk->size();
+    _global_end_offset += get_sys_page_size();
 
     logf->commit_log_block(*blk,
                            _current_log_file->start_offset(),
@@ -758,15 +759,6 @@ error_code mutation_log::create_new_log_file()
                                }
                            },
                            0);
-
-    dassert(_global_end_offset ==
-                _current_log_file->start_offset() + sizeof(log_block_header) + header_len,
-            "%" PRId64 " VS %" PRId64 "(%" PRId64 " + %d + %d)",
-            _global_end_offset,
-            _current_log_file->start_offset() + sizeof(log_block_header) + header_len,
-            _current_log_file->start_offset(),
-            (int)sizeof(log_block_header),
-            (int)header_len);
     return ERR_OK;
 }
 

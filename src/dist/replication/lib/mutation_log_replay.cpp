@@ -59,13 +59,18 @@ namespace replication {
     end_offset = global_start_offset; // reset end_offset to the start.
 
     // reads the entire block into memory
-    error_code err = log->read_next_log_block(bb);
+    bool is_padding_blk = false;
+    error_code err = log->read_next_log_block(bb, is_padding_blk);
     if (err != ERR_OK) {
         return error_s::make(err, "failed to read log block");
     }
 
     reader = dsn::make_unique<binary_reader>(bb);
     end_offset += sizeof(log_block_header);
+    if (is_padding_blk) {
+        end_offset += bb.size();
+        return error_s::ok();
+    }
 
     // The first block is log_file_header.
     if (global_start_offset == log->start_offset()) {
@@ -84,7 +89,7 @@ namespace replication {
 
         if (mu->data.header.log_offset != end_offset) {
             return FMT_ERR(ERR_INVALID_DATA,
-                           "offset mismatch in log entry and mutation {} vs {}",
+                           "offset mismatch in log entry and mutation [{} vs {}]",
                            end_offset,
                            mu->data.header.log_offset);
         }

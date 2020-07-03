@@ -135,7 +135,7 @@ log_file::~log_file() { close(); }
         return nullptr;
     }
 
-    disk_file *hfile = file::open(path, O_RDWR | O_CREAT | O_BINARY | O_DIRECT, 0666);
+    disk_file *hfile = file::open(path, O_RDWR | O_CREAT | O_BINARY | O_DIRECT | O_APPEND, 0666);
     if (!hfile) {
         dwarn("create log %s failed", path);
         return nullptr;
