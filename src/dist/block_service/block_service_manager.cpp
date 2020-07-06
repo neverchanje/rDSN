@@ -94,8 +94,10 @@ error_code block_service_manager::download_file(const std::string &remote_dir,
     error_code download_err = ERR_OK;
     task_tracker tracker;
 
-    auto download_file_callback_func = [this, &download_err, &download_file_size](
-        const download_response &resp, block_file_ptr bf, const std::string &local_file_name) {
+    auto download_file_callback_func = [&download_err,
+                                        &download_file_size](const download_response &resp,
+                                                             block_file_ptr bf,
+                                                             const std::string &local_file_name) {
         if (resp.err != ERR_OK) {
             // during bulk load process, ERR_OBJECT_NOT_FOUND will be considered as a recoverable
             // error, however, if file damaged on remote file provider, bulk load should stop,
@@ -144,8 +146,7 @@ error_code block_service_manager::download_file(const std::string &remote_dir,
         download_file_size = resp.downloaded_size;
     };
 
-    auto create_file_cb = [this,
-                           &local_dir,
+    auto create_file_cb = [&local_dir,
                            &download_err,
                            &download_file_size,
                            &download_file_callback_func,
