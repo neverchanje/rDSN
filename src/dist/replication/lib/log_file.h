@@ -184,6 +184,7 @@ public:
     uint64_t last_write_time() const { return _last_write_time; }
 
     const disk_file *file_handle() const { return _handle; }
+    disk_file *file_handle() { return _handle; }
 
 private:
     // make private, user should create log_file through open_read() or open_write()

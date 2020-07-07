@@ -61,6 +61,26 @@ namespace file {
     }
 }
 
+/*extern*/ error_code preallocate(disk_file *file, size_t offset, size_t len)
+{
+    if (nullptr != file) {
+        auto ret = disk_engine::provider().preallocate(file->native_handle(), offset, len);
+        return ret;
+    } else {
+        return ERR_INVALID_HANDLE;
+    }
+}
+
+/*extern*/ error_code truncate(disk_file *file, size_t len)
+{
+    if (nullptr != file) {
+        auto ret = disk_engine::provider().truncate(file->native_handle(), len);
+        return ret;
+    } else {
+        return ERR_INVALID_HANDLE;
+    }
+}
+
 /*extern*/ aio_task_ptr read(disk_file *file,
                              char *buffer,
                              int count,

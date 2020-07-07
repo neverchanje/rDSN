@@ -49,6 +49,9 @@ public:
     dsn_handle_t open(const char *file_name, int flag, int pmode) override;
     error_code close(dsn_handle_t fh) override;
     error_code flush(dsn_handle_t fh) override;
+    error_code preallocate(dsn_handle_t fh, size_t offset, size_t len) override;
+    error_code truncate(dsn_handle_t fh, size_t len) override;
+
     void submit_aio_task(aio_task *aio) override;
     aio_context *prepare_aio_context(aio_task *tsk) override;
 

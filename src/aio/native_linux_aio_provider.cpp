@@ -86,6 +86,26 @@ error_code native_linux_aio_provider::flush(dsn_handle_t fh)
     }
 }
 
+error_code native_linux_aio_provider::preallocate(dsn_handle_t fh, size_t offset, size_t len)
+{
+    if (fh == DSN_INVALID_FILE_HANDLE || fallocate((int)(uintptr_t)(fh), 0, offset, len) >= 0) {
+        return ERR_OK;
+    } else {
+        derror("preallocate file failed, err = %s", strerror(errno));
+        return ERR_FILE_OPERATION_FAILED;
+    }
+}
+
+error_code native_linux_aio_provider::truncate(dsn_handle_t fh, size_t len)
+{
+    if (fh == DSN_INVALID_FILE_HANDLE || ftruncate((int)(uintptr_t)(fh), len) == 0) {
+        return ERR_OK;
+    } else {
+        derror("truncate file failed, err = %s", strerror(errno));
+        return ERR_FILE_OPERATION_FAILED;
+    }
+}
+
 aio_context *native_linux_aio_provider::prepare_aio_context(aio_task *tsk)
 {
     return new linux_disk_aio_context(tsk);

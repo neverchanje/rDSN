@@ -135,7 +135,7 @@ log_file::~log_file() { close(); }
         return nullptr;
     }
 
-    disk_file *hfile = file::open(path, O_RDWR | O_CREAT | O_BINARY | O_DIRECT | O_APPEND, 0666);
+    disk_file *hfile = file::open(path, O_RDWR | O_CREAT | O_BINARY | O_DIRECT, 0666);
     if (!hfile) {
         dwarn("create log %s failed", path);
         return nullptr;
@@ -174,8 +174,13 @@ void log_file::close()
     // TODO: We need better abstraction to avoid those manual stuffs..
     _stream.reset(nullptr);
     if (_handle) {
+        if (!_is_read) {
+            error_code err = file::truncate(_handle, end_offset() - start_offset());
+            dassert_f(err == ERR_OK, "{} file::truncate failed, err={}", path(), err);
+        }
+
         error_code err = file::close(_handle);
-        dassert(err == ERR_OK, "file::close failed, err = %s", err.to_string());
+        dassert_f(err == ERR_OK, "{} file::close failed, err={}", path(), err);
 
         _handle = nullptr;
     }

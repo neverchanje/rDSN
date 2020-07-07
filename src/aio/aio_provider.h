@@ -61,6 +61,8 @@ public:
 
     virtual error_code close(dsn_handle_t fh) = 0;
     virtual error_code flush(dsn_handle_t fh) = 0;
+    virtual error_code preallocate(dsn_handle_t fh, size_t offset, size_t len) = 0;
+    virtual error_code truncate(dsn_handle_t fh, size_t len) = 0;
 
     // Submits the aio_task to the underlying disk-io executor.
     // This task may not be executed immediately, call `aio_task::wait`

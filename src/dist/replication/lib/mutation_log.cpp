@@ -701,6 +701,9 @@ error_code mutation_log::create_new_log_file()
         derror("cannot create log file with index %d", _last_file_index + 1);
         return ERR_FILE_OPERATION_FAILED;
     }
+    auto ec = file::preallocate(logf->file_handle(), 0, _max_log_file_size_in_bytes);
+    dcheck_eq(ec, ERR_OK);
+
     dassert(logf->end_offset() == logf->start_offset(),
             "%" PRId64 " VS %" PRId64 "",
             logf->end_offset(),

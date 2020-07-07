@@ -51,6 +51,10 @@ extern error_code close(disk_file *file);
 /// flush the buffer of the given file
 extern error_code flush(disk_file *file);
 
+extern error_code preallocate(disk_file *file, size_t offset, size_t len);
+
+extern error_code truncate(disk_file *file, size_t len);
+
 inline aio_task_ptr
 create_aio_task(task_code code, task_tracker *tracker, aio_handler &&callback, int hash = 0)
 {
