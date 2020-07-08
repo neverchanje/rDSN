@@ -80,6 +80,7 @@ private:
     io_context_t _ctx;
     std::atomic<bool> _is_running{false};
     std::thread _worker;
+    perf_counter_wrapper _io_submit_latency;
 };
 
 } // namespace dsn

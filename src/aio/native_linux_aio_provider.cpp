@@ -42,6 +42,9 @@ native_linux_aio_provider::native_linux_aio_provider(disk_engine *disk) : aio_pr
         task::set_tls_dsn_context(node(), nullptr);
         get_event();
     });
+
+    _io_submit_latency.init_app_counter(
+        "eon", "native_aio_submit_latency", COUNTER_TYPE_NUMBER_PERCENTILES, "");
 }
 
 native_linux_aio_provider::~native_linux_aio_provider()
@@ -216,13 +219,16 @@ error_code native_linux_aio_provider::aio_internal(aio_task *aio_tsk,
     }
 
     cbs[0] = &aio->cb;
+    uint64_t start = dsn_now_ns();
     ret = io_submit(_ctx, 1, cbs);
+    _io_submit_latency->set(dsn_now_ns() - start);
 
-    if (ret != 1) {
-        if (ret < 0)
-            derror("io_submit error, ret = %d", ret);
-        else
-            derror("could not sumbit IOs, ret = %d", ret);
+    if (ret != 1) { // must be equal to `nr` of io_submit
+        if (ret < 0) {
+            derror("io_submit error, ret = %d: %s", ret, strerror(-ret));
+        } else { // == 0
+            derror("could not submit IOs, ret = %d", ret);
+        }
 
         if (async) {
             complete_io(aio_tsk, ERR_FILE_OPERATION_FAILED, 0);
