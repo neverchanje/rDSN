@@ -28,6 +28,7 @@
 
 #include <fcntl.h>
 #include <cstdlib>
+#include <dsn/dist/fmt_logging.h>
 
 namespace dsn {
 
@@ -136,8 +137,12 @@ void native_linux_aio_provider::get_event()
         if (ret > 0) // should be 1
         {
             dassert(ret == 1, "io_getevents returns %d", ret);
+            /* Even though events[i].res is an unsigned number in libaio, it is
+            used to return a negative value (negated errno value) to indicate
+            error and a positive value to indicate number of bytes read or
+            written. */
             struct iocb *io = events[0].obj;
-            complete_aio(io, static_cast<int>(events[0].res), static_cast<int>(events[0].res2));
+            complete_iocb(io, static_cast<int>(events[0].res), static_cast<int>(events[0].res2));
         } else {
             // on error it returns a negated error number (the negative of one of the values listed
             // in ERRORS
@@ -146,23 +151,25 @@ void native_linux_aio_provider::get_event()
     }
 }
 
-void native_linux_aio_provider::complete_aio(struct iocb *io, int bytes, int err)
+void native_linux_aio_provider::complete_iocb(struct iocb *io, int res, int res2)
 {
     linux_disk_aio_context *aio = CONTAINING_RECORD(io, linux_disk_aio_context, cb);
-    error_code ec;
-    if (err != 0) {
-        derror("aio error, err = %s", strerror(err));
+    error_code ec = ERR_OK;
+    if (res < 0) {
+        derror("aio error, res = %d, err = %s", res, strerror(-res));
         ec = ERR_FILE_OPERATION_FAILED;
-    } else {
-        ec = bytes > 0 ? ERR_OK : ERR_HANDLE_EOF;
     }
+    if (res == 0) {
+        ec = ERR_HANDLE_EOF;
+    }
+    dcheck_eq(res2, 0);
 
     if (!aio->evt) {
         aio_task *aio_ptr(aio->tsk);
-        aio->this_->complete_io(aio_ptr, ec, bytes);
+        aio->this_->complete_io(aio_ptr, ec, res);
     } else {
         aio->err = ec;
-        aio->bytes = bytes;
+        aio->bytes = res;
         aio->evt->notify();
     }
 }

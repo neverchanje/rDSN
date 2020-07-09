@@ -73,7 +73,7 @@ public:
 
 protected:
     error_code aio_internal(aio_task *aio, bool async, /*out*/ uint32_t *pbytes = nullptr);
-    void complete_aio(struct iocb *io, int res, int res2);
+    void complete_iocb(struct iocb *io, int res, int res2);
     void get_event();
 
 private:
