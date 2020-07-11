@@ -311,7 +311,14 @@ function(dsn_setup_thirdparty_libs)
 endfunction(dsn_setup_thirdparty_libs)
 
 function(dsn_common_setup)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__='\"$(notdir $(abspath $<))\"'" CACHE STRING "" FORCE)
+    # This is a trick to get short path of each source file during compile-time.
+    # Finally the flag will be specified for the compilation of each ".cpp" file.
+    if(CMAKE_GENERATOR STREQUAL "Unix Makefiles")
+        # `notdir` | `abspath` is Makefile-specific commands to retrieve filename from path.
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__=\"$(notdir $(abspath $<))\"" CACHE STRING "" FORCE)
+    else()
+        message(ERROR "unsupported generator")
+    endif()
 
     if(NOT (UNIX))
         message(FATAL_ERROR "Only Unix are supported.")
