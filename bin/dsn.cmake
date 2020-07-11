@@ -315,9 +315,9 @@ function(dsn_common_setup)
     # Finally the flag will be specified for the compilation of each ".cpp" file.
     if(CMAKE_GENERATOR STREQUAL "Unix Makefiles")
         # `notdir` | `abspath` is Makefile-specific commands to retrieve filename from path.
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__=\"$(notdir $(abspath $<))\"" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__='\"$(notdir $(abspath $<))\"'" CACHE STRING "" FORCE)
     else()
-        message(ERROR "unsupported generator")
+        message(FATAL_ERROR "unsupported generator")
     endif()
 
     if(NOT (UNIX))
