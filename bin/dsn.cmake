@@ -126,7 +126,7 @@ function(dsn_add_project)
     endif()
 
     if((MY_PROJ_TYPE STREQUAL "SHARED") OR (MY_PROJ_TYPE STREQUAL "EXECUTABLE"))
-        set(MY_PROJ_LIBS ${MY_PROJ_LIBS} ${DEFAULT_THIRDPARTY_LIBS} ${MY_BOOST_LIBS} ${DSN_SYSTEM_LIBS})
+        set(MY_PROJ_LIBS ${MY_PROJ_LIBS} ${MY_BOOST_LIBS} ${DSN_SYSTEM_LIBS})
     endif()
     ms_add_project("${MY_PROJ_TYPE}" "${MY_PROJ_NAME}" "${MY_PROJ_SRC}" "${MY_PROJ_LIBS}" "${MY_BINPLACES}")
 endfunction(dsn_add_project)
@@ -311,7 +311,14 @@ function(dsn_setup_thirdparty_libs)
 endfunction(dsn_setup_thirdparty_libs)
 
 function(dsn_common_setup)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__='\"$(notdir $(abspath $<))\"'" CACHE STRING "" FORCE)
+    # This is a trick to get short path of each source file during compile-time.
+    # Finally the flag will be specified for the compilation of each ".cpp" file.
+    if(CMAKE_GENERATOR STREQUAL "Unix Makefiles")
+        # `notdir` | `abspath` is Makefile-specific commands to retrieve filename from path.
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__FILENAME__='\"$(notdir $(abspath $<))\"'" CACHE STRING "" FORCE)
+    else()
+        message(FATAL_ERROR "unsupported generator")
+    endif()
 
     if(NOT (UNIX))
         message(FATAL_ERROR "Only Unix are supported.")
