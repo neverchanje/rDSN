@@ -21,16 +21,13 @@ export CC=gcc
 export CXX=g++
 
 CLEAR_OLD_BUILD="NO"
-BOOST_ROOT=""
+source $(dirname $TP_DIR)/conan/install/activate.sh
+echo "BOOST_ROOT=$BOOST_ROOT"
 
 while [[ $# > 0 ]]; do
     case $1 in
         -c|--clear)
             CLEAR_OLD_BUILD="YES"
-            ;;
-        -b|--boost_root)
-            BOOST_ROOT="$2"
-            shift
             ;;
         *)
             echo "Error: unknown option \"$1\""
@@ -121,11 +118,8 @@ if [ ! -d $TP_OUTPUT/include/thrift ]; then
         -DWITH_LIBEVENT=OFF\
         -DCMAKE_INSTALL_PREFIX=$TP_OUTPUT\
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON\
+        -DBOOST_ROOT=$BOOST_ROOT\
         -DWITH_SHARED_LIB=OFF"
-
-    if [ "x"$BOOST_ROOT != "x" ]; then
-        CMAKE_FLAGS="$CMAKE_FLAGS -DBOOST_ROOT=$BOOST_ROOT"
-    fi
 
     echo $CMAKE_FLAGS
     cmake $TP_SRC/thrift-0.9.3 $CMAKE_FLAGS
@@ -193,13 +187,10 @@ if [ ! -d $TP_OUTPUT/include/Poco ]; then
     -DENABLE_POCODOC=OFF\
     -DENABLE_PAGECOMPILER=OFF\
     -DENABLE_PAGECOMPILER_FILE2PAGE=OFF\
+    -DBOOST_ROOT=$BOOST_ROOT\
     -DCMAKE_INSTALL_PREFIX=$TP_OUTPUT\
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
     #-DPOCO_STATIC=1"
-
-    if [ "x"$BOOST_ROOT != "x" ]; then
-        CMAKE_FLAGS="$CMAKE_FLAGS -DBOOST_ROOT=$BOOST_ROOT"
-    fi
 
     echo $CMAKE_FLAGS
     cmake $TP_SRC/poco-poco-1.7.8-release $CMAKE_FLAGS
@@ -230,11 +221,8 @@ if [ ! -d $TP_OUTPUT/include/fds ]; then
     -DPOCO_LIB=${POCO_LIB_DIR}\
     -DGTEST_INCLUDE=${GTEST_INCLUDE_DIR}\
     -DGTEST_LIB=${GTEST_LIB_DIR}\
+    -DBOOST_ROOT=$BOOST_ROOT\
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-
-    if [ "x"$BOOST_ROOT != "x" ]; then
-        CMAKE_FLAGS="$CMAKE_FLAGS -DBOOST_ROOT=$BOOST_ROOT"
-    fi
 
     echo $CMAKE_FLAGS
     cmake $TP_SRC/fds $CMAKE_FLAGS
