@@ -19,12 +19,15 @@
 #include <dsn/tool_api.h>
 #include <boost/algorithm/string.hpp>
 #include <fmt/ostream.h>
+#include <dsn/dist/fmt_logging.h>
+#include <dsn/utility/errors.h>
+#include <boost/utility/string_view.hpp>
+#include <nlohmann/json.hpp>
 
 #include "http_message_parser.h"
-#include "root_http_service.h"
 #include "pprof_http_service.h"
-#include "perf_counter_http_service.h"
 #include "uri_decoder.h"
+#include "http_server_impl.h"
 
 namespace dsn {
 
@@ -47,6 +50,74 @@ namespace dsn {
     }
 }
 
+/*extern*/ http_call_builder register_http_call(std::string full_path)
+{
+    http_call_builder builder(std::move(full_path));
+    // register this call
+    http_call_registry::instance().add(std::move(builder._call));
+    return builder;
+}
+
+/*extern*/ void deregister_http_call(std::string full_path)
+{
+    http_call_registry::instance().remove(full_path);
+}
+
+int64_t http_argument::get_int() const
+{
+    dcheck_eq(type, HTTP_ARG_INT);
+    int64_t val = 0;
+    dcheck_eq(buf2int64(_value, val), true);
+    return val;
+}
+
+bool http_argument::get_bool() const
+{
+    dcheck_eq(type, HTTP_ARG_BOOLEAN);
+    bool val = false;
+    dcheck_eq(buf2bool(_value, val), true);
+    return val;
+}
+
+std::string http_argument::get_string() const
+{
+    dcheck_eq(type, HTTP_ARG_STRING);
+    return _value;
+}
+
+bool http_argument::set_value(std::string value)
+{
+    _value = std::move(value);
+    if (type == HTTP_ARG_STRING) {
+        return true;
+    }
+    if (type == HTTP_ARG_INT) {
+        int64_t val;
+        return buf2int64(_value, val);
+    }
+    if (type == HTTP_ARG_BOOLEAN) {
+        bool val;
+        return buf2bool(_value, val);
+    }
+    return false;
+}
+
+http_service::http_service(std::string root_path) : _root_path(std::move(root_path)) {}
+
+http_service::~http_service()
+{
+    for (const std::string &p : _path_list) {
+        deregister_http_call(p);
+    }
+}
+
+http_call_builder http_service::register_handler(std::string path)
+{
+    path = _root_path + '/' + path;
+    _path_list.push_back(path);
+    return register_http_call(std::move(path));
+}
+
 http_server::http_server(bool start /*default=true*/) : serverlet<http_server>("http_server")
 {
     if (!start) {
@@ -56,15 +127,6 @@ http_server::http_server(bool start /*default=true*/) : serverlet<http_server>("
     register_rpc_handler(RPC_HTTP_SERVICE, "http_service", &http_server::serve);
 
     tools::register_message_header_parser<http_message_parser>(NET_HDR_HTTP, {"GET ", "POST"});
-
-    // add builtin services
-    add_service(new root_http_service(this));
-
-#ifdef DSN_ENABLE_GPERF
-    add_service(new pprof_http_service());
-#endif // DSN_ENABLE_GPERF
-
-    add_service(new perf_counter_http_service());
 }
 
 void http_server::serve(message_ex *msg)
@@ -76,23 +138,82 @@ void http_server::serve(message_ex *msg)
         resp.body = fmt::format("failed to parse request: {}", res.get_error());
     } else {
         const http_request &req = res.get_value();
-        auto it = _service_map.find(req.service_method.first);
-        if (it != _service_map.end()) {
-            it->second->call(req, resp);
+        auto call = http_call_registry::instance().find(req.path);
+        if (call != nullptr) {
+            call->callback(req, resp);
         } else {
             resp.status_code = http_status_code::not_found;
-            resp.body = fmt::format("service not found for \"{}\"", req.service_method.first);
+            resp.body = fmt::format("service not found for \"{}\"", req.path);
         }
     }
-
-    message_ptr resp_msg = resp.to_message(msg);
-    dsn_rpc_reply(resp_msg.get());
+    http_response_reply(resp, msg);
 }
 
-void http_server::add_service(http_service *service)
+static error_s set_argument_if_ok(std::string arg_key,
+                                  std::string arg_val,
+                                  const http_call &call,
+                                  http_request &req)
 {
-    dassert(service != nullptr, "");
-    _service_map.emplace(service->path(), std::unique_ptr<http_service>(service));
+    auto it = call.args_map.find(arg_key);
+    if (it == call.args_map.end()) {
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "\"{}\"=\"{}\"", arg_key, arg_val);
+    }
+    auto arg = std::make_shared<http_argument>(std::move(arg_key), it->second);
+    if (!arg->set_value(std::move(arg_val))) {
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "\"{}\"=\"{}\"", arg_key, arg_val);
+    }
+    req.query_args[arg->name] = std::move(arg);
+    return error_s::ok();
+}
+
+static error_s
+parse_url_query_string(std::string query_string, const http_call &call, http_request &req)
+{
+    if (query_string.empty()) {
+        return error_s::ok();
+    }
+    // decode resolved query
+    auto decoded_unresolved_query = uri::decode(query_string);
+    if (!decoded_unresolved_query.is_ok()) {
+        return decoded_unresolved_query.get_error();
+    }
+    query_string = decoded_unresolved_query.get_value();
+
+    // find if there are search-params (?<arg>=<val>&<arg>=<val>)
+    std::vector<std::string> search_params;
+    boost::split(search_params, query_string, boost::is_any_of("&"));
+    for (const std::string &arg_val : search_params) {
+        size_t sep = arg_val.find_first_of('=');
+        std::string name(arg_val.substr(0, sep));
+        std::string value;
+        if (sep != std::string::npos) {
+            value = std::string(arg_val.substr(sep + 1));
+        }
+        RETURN_NOT_OK(set_argument_if_ok(std::move(name), std::move(value), call, req));
+    }
+    return error_s::ok();
+}
+
+static error_s parse_http_request_body(std::string content_type,
+                                       std::string body,
+                                       const http_call &call,
+                                       http_request &req)
+{
+    if (content_type.find("application/json") != std::string::npos) {
+        nlohmann::json json = nlohmann::json::parse(body);
+        for (const auto &el : json.items()) {
+            RETURN_NOT_OK(set_argument_if_ok(el.key(), el.value(), call, req));
+        }
+        return error_s::ok();
+    }
+    if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
+        return parse_url_query_string(body, call, req);
+    }
+    if (content_type.find("text/plain") != std::string::npos) {
+        req.body = std::move(body);
+        return error_s::ok();
+    }
+    return FMT_ERR(ERR_INVALID_PARAMETERS, "unsupported Content-Type \"{}\"", content_type);
 }
 
 /*extern*/ error_with<http_request> parse_http_request(message_ex *m)
@@ -103,114 +224,58 @@ void http_server::add_service(http_service *service)
     }
 
     http_request ret;
-    ret.body = m->buffers[1];
-    ret.full_url = m->buffers[2];
+    std::string body = m->buffers[1].to_string();
+    blob full_url = m->buffers[2];
     ret.method = static_cast<http_method>(m->header->hdr_type);
 
     http_parser_url u{0};
-    http_parser_parse_url(ret.full_url.data(), ret.full_url.length(), false, &u);
+    http_parser_parse_url(full_url.data(), full_url.length(), false, &u);
 
-    std::string unresolved_path;
+    ret.path.clear();
     if (u.field_set & (1u << UF_PATH)) {
         uint16_t data_length = u.field_data[UF_PATH].len;
-        unresolved_path.resize(data_length + 1);
-        strncpy(&unresolved_path[0], ret.full_url.data() + u.field_data[UF_PATH].off, data_length);
-        unresolved_path[data_length] = '\0';
-
-        // decode resolved path
-        auto decoded_unresolved_path = uri::decode(unresolved_path);
-        if (!decoded_unresolved_path.is_ok()) {
-            return decoded_unresolved_path.get_error();
-        }
-        unresolved_path = decoded_unresolved_path.get_value();
+        ret.path.resize(data_length);
+        strncpy(&ret.path[0], full_url.data() + u.field_data[UF_PATH].off, data_length);
     }
 
-    std::string unresolved_query;
+    std::shared_ptr<http_call> call = http_call_registry::instance().find(ret.path);
+    if (call == nullptr) {
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "no resource under path \"{}\"", ret.path);
+    }
+
+    std::string query_string;
     if (u.field_set & (1u << UF_QUERY)) {
         uint16_t data_length = u.field_data[UF_QUERY].len;
-        unresolved_query.resize(data_length);
-        strncpy(
-            &unresolved_query[0], ret.full_url.data() + u.field_data[UF_QUERY].off, data_length);
+        query_string.resize(data_length);
+        strncpy(&query_string[0], full_url.data() + u.field_data[UF_QUERY].off, data_length);
 
-        // decode resolved query
-        auto decoded_unresolved_query = uri::decode(unresolved_query);
-        if (!decoded_unresolved_query.is_ok()) {
-            return decoded_unresolved_query.get_error();
-        }
-        unresolved_query = decoded_unresolved_query.get_value();
+        RETURN_NOT_OK(parse_url_query_string(std::move(query_string), *call, ret));
     }
 
-    // remove tailing '\0'
-    if (!unresolved_path.empty() && *unresolved_path.crbegin() == '\0') {
-        unresolved_path.pop_back();
-    }
-    std::vector<std::string> args;
-    boost::split(args, unresolved_path, boost::is_any_of("/"));
-    std::vector<std::string> real_args;
-    for (std::string &arg : args) {
-        if (!arg.empty()) {
-            real_args.emplace_back(std::move(arg));
-        }
-    }
-    if (real_args.size() == 0) {
-        ret.service_method = {"", ""};
-    } else if (real_args.size() == 1) {
-        ret.service_method = {std::move(real_args[0]), ""};
-    } else {
-        std::string method = std::move(real_args[1]);
-        for (int i = 2; i < real_args.size(); i++) {
-            method += '/';
-            method += real_args[i];
-        }
-        ret.service_method = {std::move(real_args[0]), std::move(method)};
-    }
-
-    // find if there are method args (<ip>:<port>/<service>/<method>?<arg>=<val>&<arg>=<val>)
-    if (!unresolved_query.empty()) {
-        std::vector<std::string> method_arg_val;
-        boost::split(method_arg_val, unresolved_query, boost::is_any_of("&"));
-        for (const std::string &arg_val : method_arg_val) {
-            size_t sep = arg_val.find_first_of('=');
-            if (sep == std::string::npos) {
-                // assume this as a bool flag
-                ret.query_args.emplace(arg_val, "");
-                continue;
-            }
-            std::string name = arg_val.substr(0, sep);
-            std::string value;
-            if (sep + 1 < arg_val.size()) {
-                value = arg_val.substr(sep + 1, arg_val.size() - sep);
-            }
-            auto iter = ret.query_args.find(name);
-            if (iter != ret.query_args.end()) {
-                return FMT_ERR(ERR_INVALID_PARAMETERS, "duplicate parameter: {}", name);
-            }
-            ret.query_args.emplace(std::move(name), std::move(value));
-        }
-    }
-
+    std::string content_type = m->buffers[3].to_string();
+    RETURN_NOT_OK(parse_http_request_body(content_type, body, *call, ret));
     return ret;
 }
 
-message_ptr http_response::to_message(message_ex *req) const
+/*extern*/ void http_response_reply(const http_response &resp, message_ex *req)
 {
-    message_ptr resp = req->create_response();
+    message_ptr resp_msg = req->create_response();
 
     std::ostringstream os;
-    os << "HTTP/1.1 " << http_status_code_to_string(status_code) << "\r\n";
-    os << "Content-Type: " << content_type << "\r\n";
-    os << "Content-Length: " << body.length() << "\r\n";
-    if (!location.empty()) {
-        os << "Location: " << location << "\r\n";
+    os << "HTTP/1.1 " << http_status_code_to_string(resp.status_code) << "\r\n";
+    os << "Content-Type: " << resp.content_type << "\r\n";
+    os << "Content-Length: " << resp.body.length() << "\r\n";
+    if (!resp.location.empty()) {
+        os << "Location: " << resp.location << "\r\n";
     }
     os << "\r\n";
-    os << body;
+    os << resp.body;
 
-    rpc_write_stream writer(resp.get());
+    rpc_write_stream writer(resp_msg.get());
     writer.write(os.str().data(), os.str().length());
     writer.flush();
 
-    return resp;
+    dsn_rpc_reply(resp_msg.get());
 }
 
 } // namespace dsn

@@ -4,15 +4,13 @@
 
 #include <gtest/gtest.h>
 #include <dsn/perf_counter/perf_counters.h>
-#include <dsn/http/http_server.h>
-#include <http/perf_counter_http_service.h>
+#include "http/http_server_impl.h"
 
 namespace dsn {
 
 class perf_counter_http_service_test : public testing::Test
 {
 public:
-    perf_counter_http_service _perf_counter_http_service;
 };
 
 TEST_F(perf_counter_http_service_test, get_perf_counter)
@@ -41,19 +39,20 @@ TEST_F(perf_counter_http_service_test, get_perf_counter)
         // get perf counter info through the http interface
         http_request fake_req;
         http_response fake_resp;
-        fake_req.query_args.emplace("name", perf_counter_name);
-        _perf_counter_http_service.get_perf_counter_handler(fake_req, fake_resp);
+        auto arg = std::make_shared<http_argument>("name", HTTP_ARG_STRING);
+        arg->set_value(perf_counter_name);
+        fake_req.query_args["name"] = std::move(arg);
+        get_perf_counter_handler(fake_req, fake_resp);
 
         // get fake json based on the perf counter info which is getting above
         std::string fake_json;
         if (COUNTER_TYPE_NUMBER_PERCENTILES == test.type) {
             fake_json = R"({"name":")" + perf_counter_name + R"(",)" +
-                        R"("p99":"0.00","p999":"0.00",)" +
-                        R"("type":")" + dsn_counter_type_to_string(test.type) + R"(",)" +
-                        R"("description":")" + test.description + R"("})" + "\n";
+                        R"("p99":"0.00","p999":"0.00",)" + R"("type":")" +
+                        dsn_counter_type_to_string(test.type) + R"(",)" + R"("description":")" +
+                        test.description + R"("})" + "\n";
         } else {
-            fake_json = R"({"name":")" + perf_counter_name + R"(",)" +
-                        R"("value":"0.00",)" +
+            fake_json = R"({"name":")" + perf_counter_name + R"(",)" + R"("value":"0.00",)" +
                         R"("type":")" + dsn_counter_type_to_string(test.type) + R"(",)" +
                         R"("description":")" + test.description + R"("})" + "\n";
         }

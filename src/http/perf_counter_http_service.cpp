@@ -3,22 +3,13 @@
 // can be found in the LICENSE file in the root directory of this source tree.
 
 #include <dsn/utility/output_utils.h>
-#include "perf_counter_http_service.h"
+#include <dsn/http/http_server.h>
 
 namespace dsn {
 
-void perf_counter_http_service::get_perf_counter_handler(const http_request &req,
-                                                         http_response &resp)
+void get_perf_counter_handler(const http_request &req, http_response &resp)
 {
-    std::string perf_counter_name;
-    for (const auto &p : req.query_args) {
-        if ("name" == p.first) {
-            perf_counter_name = p.second;
-        } else {
-            resp.status_code = http_status_code::bad_request;
-            return;
-        }
-    }
+    std::string perf_counter_name = req.query_args.find("name")->second->get_string();
 
     // get perf counter by perf counter name
     perf_counter_ptr perf_counter = perf_counters::instance().get_counter(perf_counter_name);
@@ -42,4 +33,5 @@ void perf_counter_http_service::get_perf_counter_handler(const http_request &req
     resp.body = out.str();
     resp.status_code = http_status_code::ok;
 }
+
 } // namespace dsn
