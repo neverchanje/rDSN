@@ -17,18 +17,7 @@ void replica_http_service::query_duplication_handler(const http_request &req, ht
         resp.status_code = http_status_code::not_found;
         return;
     }
-    auto it = req.query_args.find("appid");
-    if (it == req.query_args.end()) {
-        resp.body = "appid should not be empty";
-        resp.status_code = http_status_code::bad_request;
-        return;
-    }
-    int32_t appid = -1;
-    if (!buf2int32(it->second, appid) || appid < 0) {
-        resp.status_code = http_status_code::bad_request;
-        resp.body = fmt::format("invalid appid={}", it->second);
-        return;
-    }
+    auto appid = static_cast<int32_t>(req.get_arg_int("appid"));
     bool app_found = false;
     auto states = _stub->_duplication_sync_timer->get_dup_states(appid, &app_found);
     if (!app_found) {

@@ -42,6 +42,7 @@ class version_http_service;
 namespace replication {
 
 class meta_service;
+class meta_http_service;
 
 namespace test {
 class test_checker;
@@ -50,9 +51,6 @@ class test_checker;
 } // namespace dsn
 
 namespace dsn {
-
-class http_server;
-
 namespace service {
 
 class meta_service_app : public service_app
@@ -71,8 +69,7 @@ public:
 private:
     friend class ::dsn::replication::test::test_checker;
     std::unique_ptr<dsn::replication::meta_service> _service;
-    std::unique_ptr<http_server> _http_server;
-    version_http_service *_version_http_service;
+    std::unique_ptr<dsn::replication::meta_http_service> _http_service;
 };
 } // namespace service
 } // namespace dsn

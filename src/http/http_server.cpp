@@ -25,7 +25,6 @@
 #include <nlohmann/json.hpp>
 
 #include "http_message_parser.h"
-#include "pprof_http_service.h"
 #include "uri_decoder.h"
 #include "http_server_impl.h"
 
@@ -58,7 +57,7 @@ namespace dsn {
     return builder;
 }
 
-/*extern*/ void deregister_http_call(std::string full_path)
+/*extern*/ void deregister_http_call(const std::string &full_path)
 {
     http_call_registry::instance().remove(full_path);
 }
@@ -194,13 +193,16 @@ parse_url_query_string(std::string query_string, const http_call &call, http_req
     return error_s::ok();
 }
 
-static error_s parse_http_request_body(std::string content_type,
+static error_s parse_http_request_body(const std::string &content_type,
                                        std::string body,
                                        const http_call &call,
                                        http_request &req)
 {
     if (content_type.find("application/json") != std::string::npos) {
-        nlohmann::json json = nlohmann::json::parse(body);
+        nlohmann::json json = nlohmann::json::parse(body, nullptr, false);
+        if (json.is_discarded()) {
+            return error_s::make(ERR_INVALID_PARAMETERS, "failed to parse json");
+        }
         for (const auto &el : json.items()) {
             RETURN_NOT_OK(set_argument_if_ok(el.key(), el.value(), call, req));
         }
@@ -277,5 +279,7 @@ static error_s parse_http_request_body(std::string content_type,
 
     dsn_rpc_reply(resp_msg.get());
 }
+
+/*extern*/ void start_http_server() { static http_server server; }
 
 } // namespace dsn

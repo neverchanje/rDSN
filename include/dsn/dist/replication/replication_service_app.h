@@ -24,24 +24,12 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
 #include <dsn/utility/autoref_ptr.h>
 #include <dsn/cpp/service_app.h>
 
 namespace dsn {
-
-class http_server;
-class version_http_service;
 
 namespace replication {
 
@@ -51,6 +39,7 @@ class test_checker;
 
 class replica_stub;
 typedef dsn::ref_ptr<replica_stub> replica_stub_ptr;
+class replica_http_service;
 
 class replication_service_app : public ::dsn::service_app
 {
@@ -71,11 +60,7 @@ public:
 private:
     friend class ::dsn::replication::test::test_checker;
     replica_stub_ptr _stub;
-    std::unique_ptr<http_server> _http_server;
-    version_http_service *_version_http_service;
-
-    static const char *replica_service_app_info(int argc, char **argv);
-    static void replica_service_app_info_free(const char *response);
+    std::unique_ptr<replica_http_service> _http_service;
 };
 } // namespace replication
 } // namespace dsn

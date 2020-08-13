@@ -681,7 +681,7 @@ TEST_F(meta_duplication_service_test, query_duplication_handler)
 
     http_request fake_req;
     http_response fake_resp;
-    fake_req.query_args["name"] = test_app + "not-found";
+    fake_req.query_args["name"]->set_value(test_app + "not-found");
     mhs.query_duplication_handler(fake_req, fake_resp);
     ASSERT_EQ(fake_resp.status_code, http_status_code::not_found);
 
@@ -689,7 +689,7 @@ TEST_F(meta_duplication_service_test, query_duplication_handler)
     ASSERT_EQ(duplications.size(), 1);
     auto dup = duplications.begin()->second;
 
-    fake_req.query_args["name"] = test_app;
+    fake_req.query_args["name"]->set_value(test_app);
     mhs.query_duplication_handler(fake_req, fake_resp);
     ASSERT_EQ(fake_resp.status_code, http_status_code::ok);
     char ts_buf[32];

@@ -22,7 +22,8 @@ public:
                                 this,
                                 std::placeholders::_1,
                                 std::placeholders::_2))
-            .add_argument("app_name", HTTP_ARG_STRING);
+            .add_argument("name", HTTP_ARG_STRING)
+            .add_argument("detail", HTTP_ARG_BOOLEAN);
 
         register_handler("app/duplication")
             .callback(std::bind(&meta_http_service::query_duplication_handler,
@@ -36,12 +37,14 @@ public:
                                 this,
                                 std::placeholders::_1,
                                 std::placeholders::_2))
-            .add_argument("name", HTTP_ARG_STRING);
+            .add_argument("detail", HTTP_ARG_BOOLEAN);
 
-        register_handler("nodes").callback(std::bind(&meta_http_service::list_node_handler,
-                                                     this,
-                                                     std::placeholders::_1,
-                                                     std::placeholders::_2));
+        register_handler("nodes")
+            .callback(std::bind(&meta_http_service::list_node_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("detail", HTTP_ARG_BOOLEAN);
 
         register_handler("cluster").callback(std::bind(&meta_http_service::get_cluster_info_handler,
                                                        this,
@@ -59,7 +62,8 @@ public:
             .callback(std::bind(&meta_http_service::query_backup_policy_handler,
                                 this,
                                 std::placeholders::_1,
-                                std::placeholders::_2));
+                                std::placeholders::_2))
+            .add_argument("name", HTTP_ARG_STRING);
     }
 
     void get_app_handler(const http_request &req, http_response &resp);

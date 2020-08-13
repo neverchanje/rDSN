@@ -25,6 +25,8 @@
 
 namespace dsn {
 
+// The allowed HTTP methods. Otherwise the server will not
+// respond to the request.
 enum http_method
 {
     HTTP_METHOD_GET = 1,
@@ -61,6 +63,9 @@ struct http_argument
     // Returns true for success.
     bool set_value(std::string value);
 
+    // Returns not-parsed argument value.
+    const std::string &get_raw_value() const { return _value; }
+
 private:
     std::string _value;
 };
@@ -71,6 +76,23 @@ struct http_request
     std::string body;
     std::string path;
     http_method method;
+
+    int64_t get_arg_int(const std::string &arg) const
+    {
+        return query_args.find(arg)->second->get_int();
+    }
+    std::string get_arg_string(const std::string &arg) const
+    {
+        return query_args.find(arg)->second->get_string();
+    }
+    bool get_arg_bool(const std::string &arg) const
+    {
+        auto it = query_args.find(arg);
+        if (it == query_args.end()) {
+            return false;
+        }
+        return it->second->get_bool();
+    }
 };
 
 enum class http_status_code
@@ -145,7 +167,7 @@ private:
 extern http_call_builder register_http_call(std::string full_path);
 
 // Deregister the HTTP call.
-extern void deregister_http_call(std::string full_path);
+extern void deregister_http_call(const std::string &full_path);
 
 // A suite of HTTP handlers coupled using the same prefix of the service.
 // If a handler is registered with path 'app/duplication', its real path is
@@ -167,8 +189,5 @@ private:
 // Starts serving HTTP requests.
 // The internal HTTP server will reuse the rDSN server port.
 extern void start_http_server();
-
-// Stops serving HTTP requests.
-extern void stop_http_server();
 
 } // namespace dsn
