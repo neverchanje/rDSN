@@ -137,36 +137,27 @@ void http_server::serve(message_ex *msg)
         resp.body = fmt::format("failed to parse request: {}", res.get_error());
     } else {
         const http_request &req = res.get_value();
-        auto call = http_call_registry::instance().find(req.path);
-        if (call != nullptr) {
-            call->callback(req, resp);
-        } else {
-            resp.status_code = http_status_code::not_found;
-            resp.body = fmt::format("service not found for \"{}\"", req.path);
-        }
+        req.call->callback(req, resp);
     }
     http_response_reply(resp, msg);
 }
 
-static error_s set_argument_if_ok(std::string arg_key,
-                                  std::string arg_val,
-                                  const http_call &call,
-                                  http_request &req)
+/*extern*/ error_s set_argument_if_ok(std::string arg_key, std::string arg_val, http_request &req)
 {
+    const http_call &call = *req.call;
     auto it = call.args_map.find(arg_key);
     if (it == call.args_map.end()) {
-        return FMT_ERR(ERR_INVALID_PARAMETERS, "\"{}\"=\"{}\"", arg_key, arg_val);
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "invalid name \"{}\"", arg_key);
     }
     auto arg = std::make_shared<http_argument>(std::move(arg_key), it->second);
     if (!arg->set_value(std::move(arg_val))) {
-        return FMT_ERR(ERR_INVALID_PARAMETERS, "\"{}\"=\"{}\"", arg_key, arg_val);
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "invalid value \"{}\"", arg_val);
     }
     req.query_args[arg->name] = std::move(arg);
     return error_s::ok();
 }
 
-static error_s
-parse_url_query_string(std::string query_string, const http_call &call, http_request &req)
+static error_s parse_url_query_string(std::string query_string, http_request &req)
 {
     if (query_string.empty()) {
         return error_s::ok();
@@ -188,15 +179,13 @@ parse_url_query_string(std::string query_string, const http_call &call, http_req
         if (sep != std::string::npos) {
             value = std::string(arg_val.substr(sep + 1));
         }
-        RETURN_NOT_OK(set_argument_if_ok(std::move(name), std::move(value), call, req));
+        RETURN_NOT_OK(set_argument_if_ok(std::move(name), std::move(value), req));
     }
     return error_s::ok();
 }
 
-static error_s parse_http_request_body(const std::string &content_type,
-                                       std::string body,
-                                       const http_call &call,
-                                       http_request &req)
+static error_s
+parse_http_request_body(const std::string &content_type, std::string body, http_request &req)
 {
     if (content_type.find("application/json") != std::string::npos) {
         nlohmann::json json = nlohmann::json::parse(body, nullptr, false);
@@ -204,12 +193,12 @@ static error_s parse_http_request_body(const std::string &content_type,
             return error_s::make(ERR_INVALID_PARAMETERS, "failed to parse json");
         }
         for (const auto &el : json.items()) {
-            RETURN_NOT_OK(set_argument_if_ok(el.key(), el.value(), call, req));
+            RETURN_NOT_OK(set_argument_if_ok(el.key(), el.value(), req));
         }
         return error_s::ok();
     }
     if (content_type.find("application/x-www-form-urlencoded") != std::string::npos) {
-        return parse_url_query_string(body, call, req);
+        return parse_url_query_string(body, req);
     }
     if (content_type.find("text/plain") != std::string::npos) {
         req.body = std::move(body);
@@ -244,6 +233,7 @@ static error_s parse_http_request_body(const std::string &content_type,
     if (call == nullptr) {
         return FMT_ERR(ERR_INVALID_PARAMETERS, "no resource under path \"{}\"", ret.path);
     }
+    ret.call = std::move(call);
 
     std::string query_string;
     if (u.field_set & (1u << UF_QUERY)) {
@@ -251,11 +241,11 @@ static error_s parse_http_request_body(const std::string &content_type,
         query_string.resize(data_length);
         strncpy(&query_string[0], full_url.data() + u.field_data[UF_QUERY].off, data_length);
 
-        RETURN_NOT_OK(parse_url_query_string(std::move(query_string), *call, ret));
+        RETURN_NOT_OK(parse_url_query_string(std::move(query_string), ret));
     }
 
     std::string content_type = m->buffers[3].to_string();
-    RETURN_NOT_OK(parse_http_request_body(content_type, body, *call, ret));
+    RETURN_NOT_OK(parse_http_request_body(content_type, body, ret));
     return ret;
 }
 

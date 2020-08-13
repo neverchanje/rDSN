@@ -81,6 +81,7 @@ DEFINE_TASK_CODE_RPC(RPC_HTTP_SERVICE, TASK_PRIORITY_LOW, THREAD_POOL_DEFAULT);
 
 extern error_with<http_request> parse_http_request(dsn::message_ex *m);
 
+// Register basic services for the HTTP server.
 extern void register_builtin_http_calls();
 
 // Retrieves help info of all registered HTTP calls.

@@ -30,7 +30,7 @@ public:
     {
         http_request fake_req;
         http_response fake_resp;
-        fake_req.query_args.emplace("name", test_app);
+        fake_req.query_args["name"]->set_value(test_app);
         _mhs->get_app_handler(fake_req, fake_resp);
 
         ASSERT_EQ(fake_resp.status_code, http_status_code::ok)
@@ -50,12 +50,11 @@ public:
         // http get app envs
         http_request fake_req;
         http_response fake_resp;
-        fake_req.query_args.emplace("name", test_app);
+        fake_req.query_args["name"]->set_value(test_app);
         _mhs->get_app_envs_handler(fake_req, fake_resp);
 
         // env (value_version, 1) was set by create_app
-        std::string fake_json = R"({")" + env_key + R"(":)" +
-                                R"(")" + env_value + R"(",)" +
+        std::string fake_json = R"({")" + env_key + R"(":)" + R"(")" + env_value + R"(",)" +
                                 R"("value_version":"1"})" + "\n";
         ASSERT_EQ(fake_resp.status_code, http_status_code::ok)
             << http_status_code_to_string(fake_resp.status_code);

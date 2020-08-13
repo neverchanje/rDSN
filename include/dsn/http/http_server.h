@@ -76,6 +76,7 @@ struct http_request
     std::string body;
     std::string path;
     http_method method;
+    std::shared_ptr<http_call> call;
 
     int64_t get_arg_int(const std::string &arg) const
     {
