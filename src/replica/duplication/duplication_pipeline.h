@@ -72,6 +72,7 @@ private:
     decree _last_decree{invalid_decree};
 
     perf_counter_wrapper _counter_dup_shipped_bytes_rate;
+    perf_counter_wrapper _counter_dup_local_time_lag;
 };
 
 } // namespace replication

@@ -4,6 +4,7 @@
 
 #include <dsn/dist/replication/replication_app_base.h>
 #include <dsn/dist/fmt_logging.h>
+#include <dsn/utility/flags.h>
 
 #include "replica/replica_stub.h"
 #include "duplication_pipeline.h"
@@ -11,6 +12,14 @@
 
 namespace dsn {
 namespace replication {
+
+DSN_DEFINE_uint64(
+    "replication",
+    dup_local_lagging_write_threshold,
+    10000,
+    "The duplicated write with latency exceeds the threshold will be logged."
+    "The latency is the duration that this write stayed locally, from when it's generated,"
+    "to when its shipping begins.");
 
 //                     //
 // mutation_duplicator //
@@ -53,6 +62,14 @@ load_mutation::load_mutation(replica_duplicator *duplicator,
 
 void ship_mutation::ship(mutation_tuple_set &&in)
 {
+    for (const mutation_tuple &tu : in) {
+        uint64_t timestamp = std::get<0>(tu);
+        uint64_t time_lag = (dsn_now_us() - timestamp) * 1000 /*us to ns*/;
+        if (time_lag > FLAGS_dup_local_lagging_write_threshold * 1000 * 1000) {
+            dwarn_replica("slow duplication of write: {}ms", time_lag / 1000 / 1000);
+        }
+        _counter_dup_local_time_lag->set(time_lag);
+    }
     _mutation_duplicator->duplicate(std::move(in), [this](size_t total_shipped_size) mutable {
         update_progress();
         _counter_dup_shipped_bytes_rate->add(total_shipped_size);
@@ -98,6 +115,12 @@ ship_mutation::ship_mutation(replica_duplicator *duplicator)
                                                      "dup.shipped_bytes_rate",
                                                      COUNTER_TYPE_RATE,
                                                      "shipping rate of private log in bytes");
+
+    _counter_dup_local_time_lag.init_app_counter(
+        "eon.replica_stub",
+        "dup.local_time_tag",
+        COUNTER_TYPE_NUMBER_PERCENTILES,
+        "latency of a mutation from being handled to its shipping begins");
 }
 
 } // namespace replication
