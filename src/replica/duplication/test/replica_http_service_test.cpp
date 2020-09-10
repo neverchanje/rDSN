@@ -30,18 +30,18 @@ TEST_F(replica_http_service_test, query_duplication_handler)
     http_svc.query_duplication_handler(req, resp);
     ASSERT_EQ(resp.status_code, http_status_code::bad_request); // no appid
 
-    req.query_args["appid"] = "2";
+    req.query_args["appid"]->set_value("2");
     http_svc.query_duplication_handler(req, resp);
     ASSERT_EQ(resp.status_code, http_status_code::not_found);
 
-    req.query_args["appid"] = "2xx";
+    req.query_args["appid"]->set_value("2xx");
     http_svc.query_duplication_handler(req, resp);
     ASSERT_EQ(resp.status_code, http_status_code::bad_request);
 
     auto dup = find_dup(pri, ent.dupid);
     dup->update_progress(duplication_progress().set_last_decree(1050).set_confirmed_decree(1000));
     pri->set_last_committed_decree(1100);
-    req.query_args["appid"] = "1";
+    req.query_args["appid"]->set_value("1");
     http_svc.query_duplication_handler(req, resp);
     ASSERT_EQ(resp.status_code, http_status_code::ok);
     ASSERT_EQ(

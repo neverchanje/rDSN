@@ -303,7 +303,7 @@ void pprof_http_service::symbol_handler(const http_request &req, http_response &
     }
 
     // addr_str is addresses separated by +
-    std::string addr_str = req.body.to_string();
+    const std::string &addr_str = req.body;
     // May be quoted
     const char *addr_cstr = addr_str.data();
     if (*addr_cstr == '\'' || *addr_cstr == '"') {
@@ -334,13 +334,11 @@ void pprof_http_service::heap_handler(const http_request &req, http_response &re
 
     const std::string SECOND = "seconds";
     const uint32_t kDefaultSecond = 10;
-
     // get seconds from query params, default value is `kDefaultSecond`
     uint32_t seconds = kDefaultSecond;
     const auto iter = req.query_args.find(SECOND);
     if (iter != req.query_args.end()) {
-        const auto seconds_str = iter->second;
-        dsn::internal::buf2unsigned(seconds_str, seconds);
+        seconds = iter->second->get_int();
     }
 
     std::stringstream profile_name_prefix;
@@ -473,22 +471,8 @@ void pprof_http_service::profile_handler(const http_request &req, http_response 
     }
 
     useconds_t seconds = 60000000;
-
-    const char *req_url = req.full_url.to_string().data();
-    size_t len = req.full_url.length();
-    string_splitter url_sp(req_url, req_url + len, '?');
-    if (url_sp != NULL && ++url_sp != NULL) {
-        string_splitter param_sp(url_sp.field(), url_sp.field() + url_sp.length(), '&');
-        while (param_sp != NULL) {
-            string_splitter kv_sp(param_sp.field(), param_sp.field() + param_sp.length(), '=');
-            std::string key(kv_sp.field(), kv_sp.length());
-            if (kv_sp != NULL && key == "seconds" && ++kv_sp != NULL) {
-                char *end_ptr;
-                seconds = strtoul(kv_sp.field(), &end_ptr, 10) * 1000000;
-                break;
-            }
-            param_sp++;
-        }
+    for (const auto &el : req.query_args) {
+        seconds = el.second->get_int();
     }
 
     resp.status_code = http_status_code::ok;

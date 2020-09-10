@@ -12,56 +12,59 @@ namespace dsn {
 namespace replication {
 
 class meta_service;
-class meta_http_service : public http_service
+class meta_http_service final : http_service
 {
 public:
-    explicit meta_http_service(meta_service *s) : _service(s)
+    explicit meta_http_service(meta_service *s) : http_service("meta"), _service(s)
     {
-        register_handler("app",
-                         std::bind(&meta_http_service::get_app_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/app?app_name=temp");
-        register_handler("app/duplication",
-                         std::bind(&meta_http_service::query_duplication_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/app/duplication?name=<app_name>");
-        register_handler("apps",
-                         std::bind(&meta_http_service::list_app_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/apps");
-        register_handler("nodes",
-                         std::bind(&meta_http_service::list_node_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/nodes");
-        register_handler("cluster",
-                         std::bind(&meta_http_service::get_cluster_info_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/cluster");
-        register_handler("app_envs",
-                         std::bind(&meta_http_service::get_app_envs_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/app_envs?name=temp");
-        register_handler("backup_policy",
-                         std::bind(&meta_http_service::query_backup_policy_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/meta/backup_policy");
-    }
+        register_handler("app")
+            .callback(std::bind(&meta_http_service::get_app_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("name", HTTP_ARG_STRING)
+            .add_argument("detail", HTTP_ARG_BOOLEAN);
 
-    std::string path() const override { return "meta"; }
+        register_handler("app/duplication")
+            .callback(std::bind(&meta_http_service::query_duplication_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("name", HTTP_ARG_STRING);
+
+        register_handler("apps")
+            .callback(std::bind(&meta_http_service::list_app_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("detail", HTTP_ARG_BOOLEAN);
+
+        register_handler("nodes")
+            .callback(std::bind(&meta_http_service::list_node_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("detail", HTTP_ARG_BOOLEAN);
+
+        register_handler("cluster").callback(std::bind(&meta_http_service::get_cluster_info_handler,
+                                                       this,
+                                                       std::placeholders::_1,
+                                                       std::placeholders::_2));
+
+        register_handler("app_envs")
+            .callback(std::bind(&meta_http_service::get_app_envs_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("name", HTTP_ARG_STRING);
+
+        register_handler("backup_policy")
+            .callback(std::bind(&meta_http_service::query_backup_policy_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("name", HTTP_ARG_STRING);
+    }
 
     void get_app_handler(const http_request &req, http_response &resp);
     void list_app_handler(const http_request &req, http_response &resp);

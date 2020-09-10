@@ -42,9 +42,7 @@ void replication_service_app::register_all()
 replication_service_app::replication_service_app(const service_app_info *info) : service_app(info)
 {
     _stub = new replica_stub();
-
-    // add http service
-    register_http_service(new replica_http_service(_stub.get()));
+    _http_service = dsn::make_unique<replica_http_service>(_stub.get());
     start_http_server();
 }
 

@@ -36,18 +36,9 @@ struct list_nodes_helper
 
 void meta_http_service::get_app_handler(const http_request &req, http_response &resp)
 {
-    std::string app_name;
-    bool detailed = false;
-    for (const auto &p : req.query_args) {
-        if (p.first == "name") {
-            app_name = p.second;
-        } else if (p.first == "detail") {
-            detailed = true;
-        } else {
-            resp.status_code = http_status_code::bad_request;
-            return;
-        }
-    }
+    std::string app_name = req.get_arg_string("name");
+    bool detailed = req.get_arg_bool("detail");
+
     if (!redirect_if_not_primary(req, resp))
         return;
 
@@ -168,15 +159,7 @@ void meta_http_service::get_app_handler(const http_request &req, http_response &
 
 void meta_http_service::list_app_handler(const http_request &req, http_response &resp)
 {
-    bool detailed = false;
-    for (const auto &p : req.query_args) {
-        if (p.first == "detail") {
-            detailed = true;
-        } else {
-            resp.status_code = http_status_code::bad_request;
-            return;
-        }
-    }
+    bool detailed = req.get_arg_bool("detail");
     if (!redirect_if_not_primary(req, resp))
         return;
     configuration_list_apps_response response;
@@ -339,15 +322,7 @@ void meta_http_service::list_app_handler(const http_request &req, http_response 
 
 void meta_http_service::list_node_handler(const http_request &req, http_response &resp)
 {
-    bool detailed = false;
-    for (const auto &p : req.query_args) {
-        if (p.first == "detail") {
-            detailed = true;
-        } else {
-            resp.status_code = http_status_code::bad_request;
-            return;
-        }
-    }
+    bool detailed = req.get_arg_bool("detail");
     if (!redirect_if_not_primary(req, resp))
         return;
 
@@ -477,13 +452,7 @@ void meta_http_service::get_app_envs_handler(const http_request &req, http_respo
     if (!redirect_if_not_primary(req, resp))
         return;
 
-    std::string app_name;
-    for (const auto &p : req.query_args) {
-        if ("name" == p.first) {
-            app_name = p.second;
-            break;
-        }
-    }
+    std::string app_name = req.get_arg_string("name");
     if (app_name.empty()) {
         resp.status_code = http_status_code::bad_request;
         resp.body = "app name shouldn't be empty";
@@ -539,17 +508,7 @@ void meta_http_service::query_backup_policy_handler(const http_request &req, htt
         return;
     }
     auto request = dsn::make_unique<configuration_query_backup_policy_request>();
-    std::vector<std::string> policy_names;
-    for (const auto &p : req.query_args) {
-        if (p.first == "name") {
-            policy_names.push_back(p.second);
-        } else {
-            resp.body = "Invalid parameter";
-            resp.status_code = http_status_code::bad_request;
-            return;
-        }
-    }
-    request->policy_names = std::move(policy_names);
+    request->policy_names = {req.get_arg_string("name")};
     query_backup_policy_rpc http_to_rpc(std::move(request), LPC_DEFAULT_CALLBACK);
     _service->_backup_handler->query_backup_policy(http_to_rpc);
     auto rpc_return = http_to_rpc.response();
@@ -588,13 +547,7 @@ void meta_http_service::query_duplication_handler(const http_request &req, http_
         return;
     }
     duplication_query_request rpc_req;
-    auto it = req.query_args.find("name");
-    if (it == req.query_args.end()) {
-        resp.body = "name should not be empty";
-        resp.status_code = http_status_code::bad_request;
-        return;
-    }
-    rpc_req.app_name = it->second;
+    rpc_req.app_name = req.get_arg_string("name");
     duplication_query_response rpc_resp;
     _service->_dup_svc->query_duplication_info(rpc_req, rpc_resp);
     if (rpc_resp.err != ERR_OK) {
@@ -623,7 +576,11 @@ bool meta_http_service::redirect_if_not_primary(const http_request &req, http_re
     if (!req.query_args.empty()) {
         resp.location += '?';
         for (const auto &i : req.query_args) {
-            resp.location += i.first + '=' + i.second + '&';
+            if (req.get_arg_bool(i.first)) {
+                resp.location += i.first + '&';
+            } else {
+                resp.location += i.first + '=' + i.second->get_raw_value() + '&';
+            }
         }
         resp.location.pop_back(); // remove final '&'
     }

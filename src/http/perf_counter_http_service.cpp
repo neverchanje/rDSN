@@ -9,15 +9,7 @@ namespace dsn {
 
 void get_perf_counter_handler(const http_request &req, http_response &resp)
 {
-    std::string perf_counter_name;
-    for (const auto &p : req.query_args) {
-        if ("name" == p.first) {
-            perf_counter_name = p.second;
-        } else {
-            resp.status_code = http_status_code::bad_request;
-            return;
-        }
-    }
+    std::string perf_counter_name = req.get_arg_string("name");
 
     // get perf counter by perf counter name
     perf_counter_ptr perf_counter = perf_counters::instance().get_counter(perf_counter_name);

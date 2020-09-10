@@ -4,30 +4,87 @@
 
 #pragma once
 
-#include <dsn/utility/errors.h>
 #include <dsn/utility/flags.h>
+#include <string>
+#include <memory>
+#include <vector>
+#include <functional>
+#include <unordered_map>
 
 namespace dsn {
 
 DSN_DECLARE_bool(enable_http_server);
 
+// The allowed HTTP methods. Otherwise the server will not
+// respond to the request.
 enum http_method
 {
     HTTP_METHOD_GET = 1,
     HTTP_METHOD_POST = 2,
 };
 
-class message_ex;
+// The argument types for an HTTP request.
+// If any type check failed, 400 status code is returned.
+enum http_argument_type
+{
+    HTTP_ARG_INT,
+    HTTP_ARG_STRING,
+    HTTP_ARG_BOOLEAN,
+};
+
+// An argument could be in percent-encoded params, which starts with '?' (<url>?name=value), [1]
+// or in the HTML form with "Content-Type: application/x-www-form-urlencoded" [2]
+// and "application/json" [3].
+//
+// [1] https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams/URLSearchParams
+// [2] https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/POST
+// [3] https://www.w3.org/TR/html-json-forms/
+struct http_argument
+{
+    const std::string name;
+    const http_argument_type type;
+
+    http_argument(std::string nm, http_argument_type tp) : name(std::move(nm)), type(tp) {}
+
+    int64_t get_int() const;
+    bool get_bool() const;
+    std::string get_string() const;
+
+    // Returns true for success.
+    bool set_value(std::string value);
+
+    // Returns not-parsed argument value.
+    const std::string &get_raw_value() const { return _value; }
+
+private:
+    std::string _value;
+};
+
+struct http_call;
 struct http_request
 {
-    static error_with<http_request> parse(dsn::message_ex *m);
-
+    std::unordered_map<std::string, std::shared_ptr<http_argument>> query_args;
+    std::string body;
     std::string path;
-    // <args_name, args_val>
-    std::unordered_map<std::string, std::string> query_args;
-    blob body;
-    blob full_url;
     http_method method;
+    std::shared_ptr<http_call> call;
+
+    int64_t get_arg_int(const std::string &arg) const
+    {
+        return query_args.find(arg)->second->get_int();
+    }
+    std::string get_arg_string(const std::string &arg) const
+    {
+        return query_args.find(arg)->second->get_string();
+    }
+    bool get_arg_bool(const std::string &arg) const
+    {
+        auto it = query_args.find(arg);
+        if (it == query_args.end()) {
+            return false;
+        }
+        return it->second->get_bool();
+    }
 };
 
 enum class http_status_code
@@ -57,6 +114,7 @@ struct http_call
     std::string path;
     std::string help;
     http_callback callback;
+    std::unordered_map<std::string, http_argument_type> args_map;
 
     http_call &with_callback(http_callback cb)
     {
@@ -66,6 +124,11 @@ struct http_call
     http_call &with_help(std::string hp)
     {
         help = std::move(hp);
+        return *this;
+    }
+    http_call &add_argument(std::string name, http_argument_type type)
+    {
+        args_map.emplace(std::move(name), type);
         return *this;
     }
 };

@@ -5,6 +5,8 @@
 #include <dsn/http/http_server.h>
 #include <dsn/tool_api.h>
 #include <dsn/utility/time_utils.h>
+#include <dsn/utility/flags.h>
+#include <dsn/dist/fmt_logging.h>
 #include <boost/algorithm/string.hpp>
 #include <fmt/ostream.h>
 
@@ -50,6 +52,45 @@ DSN_DEFINE_bool("http", enable_http_server, true, "whether to enable the embedde
 /*extern*/ void deregister_http_call(const std::string &full_path)
 {
     http_call_registry::instance().remove(full_path);
+}
+
+int64_t http_argument::get_int() const
+{
+    dcheck_eq(type, HTTP_ARG_INT);
+    int64_t val = 0;
+    dcheck_eq(buf2int64(_value, val), true);
+    return val;
+}
+
+bool http_argument::get_bool() const
+{
+    dcheck_eq(type, HTTP_ARG_BOOLEAN);
+    bool val = false;
+    dcheck_eq(buf2bool(_value, val), true);
+    return val;
+}
+
+std::string http_argument::get_string() const
+{
+    dcheck_eq(type, HTTP_ARG_STRING);
+    return _value;
+}
+
+bool http_argument::set_value(std::string value)
+{
+    _value = std::move(value);
+    if (type == HTTP_ARG_STRING) {
+        return true;
+    }
+    if (type == HTTP_ARG_INT) {
+        int64_t val;
+        return buf2int64(_value, val);
+    }
+    if (type == HTTP_ARG_BOOLEAN) {
+        bool val;
+        return buf2bool(_value, val);
+    }
+    return false;
 }
 
 void http_service::register_handler(std::string path, http_callback cb, std::string help)
@@ -102,7 +143,49 @@ void http_server::serve(message_ex *msg)
     http_response_reply(resp, msg);
 }
 
-/*static*/ error_with<http_request> http_request::parse(message_ex *m)
+/*extern*/ error_s set_argument_if_ok(std::string arg_key, std::string arg_val, http_request &req)
+{
+    const http_call &call = *req.call;
+    auto it = call.args_map.find(arg_key);
+    if (it == call.args_map.end()) {
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "invalid name \"{}\"", arg_key);
+    }
+    auto arg = std::make_shared<http_argument>(std::move(arg_key), it->second);
+    if (!arg->set_value(std::move(arg_val))) {
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "invalid value \"{}\"", arg_val);
+    }
+    req.query_args[arg->name] = std::move(arg);
+    return error_s::ok();
+}
+
+static error_s parse_url_query_string(std::string query_string, http_request &req)
+{
+    if (query_string.empty()) {
+        return error_s::ok();
+    }
+    // decode resolved query
+    auto decoded_unresolved_query = uri::decode(query_string);
+    if (!decoded_unresolved_query.is_ok()) {
+        return decoded_unresolved_query.get_error();
+    }
+    query_string = decoded_unresolved_query.get_value();
+
+    // find if there are search-params (?<arg>=<val>&<arg>=<val>)
+    std::vector<std::string> search_params;
+    boost::split(search_params, query_string, boost::is_any_of("&"));
+    for (const std::string &arg_val : search_params) {
+        size_t sep = arg_val.find_first_of('=');
+        std::string name(arg_val.substr(0, sep));
+        std::string value;
+        if (sep != std::string::npos) {
+            value = std::string(arg_val.substr(sep + 1));
+        }
+        RETURN_NOT_OK(set_argument_if_ok(std::move(name), std::move(value), req));
+    }
+    return error_s::ok();
+}
+
+/*extern*/ error_with<http_request> parse_http_request(message_ex *m)
 {
     if (m->buffers.size() != 3) {
         return error_s::make(ERR_INVALID_DATA,
@@ -110,71 +193,33 @@ void http_server::serve(message_ex *msg)
     }
 
     http_request ret;
-    ret.body = m->buffers[1];
-    ret.full_url = m->buffers[2];
+    std::string body = m->buffers[1].to_string();
+    blob full_url = m->buffers[2];
     ret.method = static_cast<http_method>(m->header->hdr_type);
 
     http_parser_url u{0};
-    http_parser_parse_url(ret.full_url.data(), ret.full_url.length(), false, &u);
+    http_parser_parse_url(full_url.data(), full_url.length(), false, &u);
 
-    std::string unresolved_path;
+    ret.path.clear();
     if (u.field_set & (1u << UF_PATH)) {
         uint16_t data_length = u.field_data[UF_PATH].len;
-        unresolved_path.resize(data_length + 1);
-        strncpy(&unresolved_path[0], ret.full_url.data() + u.field_data[UF_PATH].off, data_length);
-        unresolved_path[data_length] = '\0';
-
-        // decode resolved path
-        auto decoded_unresolved_path = uri::decode(unresolved_path);
-        if (!decoded_unresolved_path.is_ok()) {
-            return decoded_unresolved_path.get_error();
-        }
-        unresolved_path = decoded_unresolved_path.get_value();
+        ret.path.resize(data_length);
+        strncpy(&ret.path[0], full_url.data() + u.field_data[UF_PATH].off, data_length);
     }
 
-    std::string unresolved_query;
+    std::shared_ptr<http_call> call = http_call_registry::instance().find(ret.path);
+    if (call == nullptr) {
+        return FMT_ERR(ERR_INVALID_PARAMETERS, "no resource under path \"{}\"", ret.path);
+    }
+    ret.call = std::move(call);
+
+    std::string query_string;
     if (u.field_set & (1u << UF_QUERY)) {
         uint16_t data_length = u.field_data[UF_QUERY].len;
-        unresolved_query.resize(data_length);
-        strncpy(
-            &unresolved_query[0], ret.full_url.data() + u.field_data[UF_QUERY].off, data_length);
+        query_string.resize(data_length);
+        strncpy(&query_string[0], full_url.data() + u.field_data[UF_QUERY].off, data_length);
 
-        // decode resolved query
-        auto decoded_unresolved_query = uri::decode(unresolved_query);
-        if (!decoded_unresolved_query.is_ok()) {
-            return decoded_unresolved_query.get_error();
-        }
-        unresolved_query = decoded_unresolved_query.get_value();
-    }
-
-    // remove tailing '\0'
-    if (!unresolved_path.empty() && *unresolved_path.crbegin() == '\0') {
-        unresolved_path.pop_back();
-    }
-    ret.path = std::move(unresolved_path);
-
-    // find if there are method args (<ip>:<port>/<service>/<method>?<arg>=<val>&<arg>=<val>)
-    if (!unresolved_query.empty()) {
-        std::vector<std::string> method_arg_val;
-        boost::split(method_arg_val, unresolved_query, boost::is_any_of("&"));
-        for (const std::string &arg_val : method_arg_val) {
-            size_t sep = arg_val.find_first_of('=');
-            if (sep == std::string::npos) {
-                // assume this as a bool flag
-                ret.query_args.emplace(arg_val, "");
-                continue;
-            }
-            std::string name = arg_val.substr(0, sep);
-            std::string value;
-            if (sep + 1 < arg_val.size()) {
-                value = arg_val.substr(sep + 1, arg_val.size() - sep);
-            }
-            auto iter = ret.query_args.find(name);
-            if (iter != ret.query_args.end()) {
-                return FMT_ERR(ERR_INVALID_PARAMETERS, "duplicate parameter: {}", name);
-            }
-            ret.query_args.emplace(std::move(name), std::move(value));
-        }
+        RETURN_NOT_OK(parse_url_query_string(std::move(query_string), ret));
     }
 
     return ret;

@@ -13,41 +13,33 @@ namespace dsn {
 class pprof_http_service : public http_service
 {
 public:
-    pprof_http_service()
+    pprof_http_service() : http_service("pprof")
     {
-        register_handler("heap",
-                         std::bind(&pprof_http_service::heap_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/pprof/heap");
-        register_handler("symbol",
-                         std::bind(&pprof_http_service::symbol_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/pprof/symbol");
-        register_handler("cmdline",
-                         std::bind(&pprof_http_service::cmdline_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/pprof/cmdline");
-        register_handler("growth",
-                         std::bind(&pprof_http_service::growth_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/pprof/growth");
-        register_handler("profile",
-                         std::bind(&pprof_http_service::profile_handler,
-                                   this,
-                                   std::placeholders::_1,
-                                   std::placeholders::_2),
-                         "ip:port/pprof/profile");
+        register_handler("heap")
+            .callback(std::bind(&pprof_http_service::heap_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("seconds", HTTP_ARG_INT);
+        register_handler("symbol").callback(std::bind(&pprof_http_service::symbol_handler,
+                                                      this,
+                                                      std::placeholders::_1,
+                                                      std::placeholders::_2));
+        register_handler("cmdline").callback(std::bind(&pprof_http_service::cmdline_handler,
+                                                       this,
+                                                       std::placeholders::_1,
+                                                       std::placeholders::_2));
+        register_handler("growth").callback(std::bind(&pprof_http_service::growth_handler,
+                                                      this,
+                                                      std::placeholders::_1,
+                                                      std::placeholders::_2));
+        register_handler("profile")
+            .callback(std::bind(&pprof_http_service::profile_handler,
+                                this,
+                                std::placeholders::_1,
+                                std::placeholders::_2))
+            .add_argument("seconds", HTTP_ARG_INT);
     }
-
-    std::string path() const override { return "pprof"; }
 
     void heap_handler(const http_request &req, http_response &resp);
 
