@@ -24,15 +24,6 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Unit-test for rpc_message.
- *
- * Revision history:
- *     Nov., 2015, @qinzuoyan (Zuoyan Qin), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include "runtime/message_utils.cpp"
 #include <dsn/utility/crc.h>
 #include <dsn/utility/transient_memory.h>
@@ -42,10 +33,6 @@
 using namespace ::dsn;
 
 DEFINE_TASK_CODE_RPC(RPC_CODE_FOR_TEST, TASK_PRIORITY_COMMON, ::dsn::THREAD_POOL_DEFAULT)
-
-namespace dsn {
-extern void tls_trans_mem_alloc(size_t min_size);
-}
 
 TEST(core, message_ex)
 {
@@ -137,8 +124,6 @@ TEST(core, message_ex)
         ASSERT_EQ(ptr, request->rw_ptr(0));
         ASSERT_EQ((void *)((char *)ptr + 10), request->rw_ptr(10));
         ASSERT_EQ(nullptr, request->rw_ptr(data_size));
-
-        tls_trans_mem_alloc(1024); // reset tls buffer
 
         request->write_next(&ptr, &sz, data_size);
         memcpy(ptr, data, data_size);

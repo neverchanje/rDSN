@@ -24,15 +24,6 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include <dsn/utility/ports.h>
 #include <dsn/utility/crc.h>
 #include <dsn/utility/transient_memory.h>
@@ -154,16 +145,20 @@ message_ex *message_ex::create_received_request(dsn::task_code code,
     return msg;
 }
 
+// returns a new blob that contains an empty message header.
+blob new_message_header_holder()
+{
+    std::string buf('\0', sizeof(message_header));
+    return blob::create_from_bytes(std::move(buf));
+}
+
 message_ex *message_ex::create_receive_message_with_standalone_header(const blob &data)
 {
     message_ex *msg = new message_ex();
-    std::shared_ptr<char> header_holder(
-        static_cast<char *>(dsn::tls_trans_malloc(sizeof(message_header))),
-        [](char *c) { dsn::tls_trans_free(c); });
-    msg->header = reinterpret_cast<message_header *>(header_holder.get());
-    memset(static_cast<void *>(msg->header), 0, sizeof(message_header));
+    blob header_holder = new_message_header_holder();
+    msg->header = reinterpret_cast<message_header *>(header_holder.buffer().get());
 
-    msg->buffers.emplace_back(blob(std::move(header_holder), sizeof(message_header)));
+    msg->buffers.emplace_back(std::move(header_holder), sizeof(message_header));
     msg->buffers.push_back(data);
 
     msg->header->body_length = data.length();
@@ -177,12 +172,10 @@ message_ex *message_ex::create_receive_message_with_standalone_header(const blob
 message_ex *message_ex::copy_message_no_reply(const message_ex &old_msg)
 {
     message_ex *msg = new message_ex();
-    std::shared_ptr<char> header_holder(
-        static_cast<char *>(dsn::tls_trans_malloc(sizeof(message_header))),
-        [](char *c) { dsn::tls_trans_free(c); });
-    msg->header = reinterpret_cast<message_header *>(header_holder.get());
+    blob header_holder = new_message_header_holder();
+    msg->header = reinterpret_cast<message_header *>(header_holder.buffer().get());
     msg->header = {}; // initialize to empty struct
-    msg->buffers.emplace_back(blob(std::move(header_holder), sizeof(message_header)));
+    msg->buffers.emplace_back(std::move(header_holder), sizeof(message_header));
 
     if (old_msg.buffers.size() == 1) {
         // if old_msg only has header, consider its header as data
@@ -382,25 +375,12 @@ message_ex *message_ex::create_response()
 
 void message_ex::prepare_buffer_header()
 {
-    void *ptr;
-    size_t size;
-    ::dsn::tls_trans_mem_next(&ptr, &size, sizeof(message_header));
-
-    ::dsn::blob buffer((*::dsn::tls_trans_memory.block),
-                       (int)((char *)(ptr) - ::dsn::tls_trans_memory.block->get()),
-                       (int)sizeof(message_header));
-
-    ::dsn::tls_trans_mem_commit(sizeof(message_header));
+    blob header_holder = new_message_header_holder();
+    msg->header = reinterpret_cast<message_header *>(header_holder.buffer().get());
 
     this->_rw_index = 0;
     this->_rw_offset = (int)sizeof(message_header);
     this->buffers.push_back(buffer);
-
-    // here we should call placement new,
-    // so the gpid & rpc_address can be initialized
-    new (ptr)(message_header);
-
-    header = (message_header *)ptr;
 }
 
 void message_ex::release_buffer_header()
@@ -412,11 +392,9 @@ void message_ex::release_buffer_header()
 
 void message_ex::write_next(void **ptr, size_t *size, size_t min_size)
 {
-    // printf("%p %s\n", this, __FUNCTION__);
     dassert(!this->_is_read && this->_rw_committed,
             "there are pending msg write not committed"
             ", please invoke dsn_msg_write_next and dsn_msg_write_commit in pairs");
-    ::dsn::tls_trans_mem_next(ptr, size, min_size);
     this->_rw_committed = false;
 
     // optimization
